@@ -69,6 +69,10 @@ type Controller struct {
 	sel        audio.Selection
 	status     string
 
+	// settings is the full persisted user-settings model (Wave 1). 락(mu) 보호.
+	// 변경 바인딩 메서드가 이 값을 갱신하고 즉시 settings.json에 저장한다.
+	settings config.Settings
+
 	// overlay 자식 프로세스.
 	child      *exec.Cmd
 	childStdin io.WriteCloser
@@ -79,12 +83,13 @@ type Controller struct {
 // newController creates a controller with default language/model settings.
 func newController() *Controller {
 	return &Controller{
-		model:  config.GeminiModel,
-		target: config.DefaultTargetLanguage,
-		source: config.DefaultSourceLanguage,
-		sel:    audio.Selection{Mode: audio.SelectAuto},
-		status: "idle",
-		events: make(chan pipeline.Event, 256),
+		model:    config.GeminiModel,
+		target:   config.DefaultTargetLanguage,
+		source:   config.DefaultSourceLanguage,
+		sel:      audio.Selection{Mode: audio.SelectAuto},
+		status:   "idle",
+		events:   make(chan pipeline.Event, 256),
+		settings: config.DefaultSettings(),
 	}
 }
 
@@ -93,10 +98,27 @@ func newController() *Controller {
 func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	c.ctx = ctx
 
+	// 설정을 먼저 로드해 적용한다(Wave 1). 실패해도 기본값으로 HUD는 뜬다.
+	settings, serr := config.Load()
+	if serr != nil {
+		log.Println("[controller] settings load:", serr)
+	}
+
 	// API 키 1회 로드. 실패해도 HUD는 뜨고, Start() 시 오류를 표면화한다.
 	key, err := config.APIKey()
 	c.mu.Lock()
 	c.apiKey, c.apiKeyErr = key, err
+	c.settings = settings
+	// 설정에서 언어/입력/원문을 초기화한다.
+	if settings.Language.Target != "" {
+		c.target = settings.Language.Target
+	}
+	if settings.Language.Source != "" {
+		c.source = settings.Language.Source
+	}
+	c.showSource = settings.Language.ShowSource
+	c.sel = selectionFromSettings(settings.Input)
+	// 플래그가 있으면 설정을 오버라이드한다(자동화/검증용). 오버라이드 값은 저장하지 않는다.
 	if flags.target != "" {
 		c.target = flags.target
 	}
@@ -343,6 +365,7 @@ func (c *Controller) IsRunning() bool {
 }
 
 // SetTarget changes the target (번역 대상) language. Hot-swaps if running.
+// 변경 사항을 settings.json에 즉시 저장한다(Wave 1).
 func (c *Controller) SetTarget(lang string) {
 	lang = strings.TrimSpace(lang)
 	if lang == "" {
@@ -350,6 +373,8 @@ func (c *Controller) SetTarget(lang string) {
 	}
 	c.mu.Lock()
 	c.target = lang
+	c.settings.Language.Target = lang
+	snap := c.settings
 	running := c.running
 	cfg := app.ProviderConfig{
 		Model:          c.model,
@@ -358,6 +383,7 @@ func (c *Controller) SetTarget(lang string) {
 		ShowSource:     c.showSource,
 	}
 	c.mu.Unlock()
+	c.saveSettings(snap)
 	if running && c.r != nil {
 		c.r.SetProviderConfig(cfg)
 	}
@@ -372,8 +398,11 @@ func (c *Controller) SetInput(mode string) error {
 	}
 	c.mu.Lock()
 	c.sel = sel
+	c.settings.Input = settingsInputFromSelection(sel)
+	snap := c.settings
 	running := c.running
 	c.mu.Unlock()
+	c.saveSettings(snap)
 	if running && c.r != nil {
 		c.r.SetSelection(sel)
 	}
@@ -381,9 +410,12 @@ func (c *Controller) SetInput(mode string) error {
 }
 
 // SetShowSource toggles source-transcription (원문 동시 표시). Hot-swaps if running.
+// 변경 사항을 settings.json에 즉시 저장한다(Wave 1).
 func (c *Controller) SetShowSource(on bool) {
 	c.mu.Lock()
 	c.showSource = on
+	c.settings.Language.ShowSource = on
+	snap := c.settings
 	running := c.running
 	cfg := app.ProviderConfig{
 		Model:          c.model,
@@ -392,6 +424,7 @@ func (c *Controller) SetShowSource(on bool) {
 		ShowSource:     on,
 	}
 	c.mu.Unlock()
+	c.saveSettings(snap)
 	if running && c.r != nil {
 		c.r.SetProviderConfig(cfg)
 	}
@@ -411,6 +444,170 @@ func (c *Controller) ListDevices() []audio.DeviceInfo {
 		return nil
 	}
 	return devs
+}
+
+// -----------------------------------------------------------------------------
+// Settings + API-key bindings (Wave 1 / A1)
+// -----------------------------------------------------------------------------
+
+// GetSettings returns the current full user-settings model for the settings UI.
+func (c *Controller) GetSettings() config.Settings {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.settings
+}
+
+// SaveSettings validates and persists the full settings model, then applies the
+// language/input/show-source values (hot-swaps if running). 자막 스타일/오디오 등
+// 상세 적용은 후속 웨이브 — 이번 웨이브는 저장·조회 + 언어/입력/원문 적용이 동작한다.
+func (c *Controller) SaveSettings(s config.Settings) error {
+	s = normalizeSettings(s)
+
+	c.mu.Lock()
+	c.settings = s
+	c.target = s.Language.Target
+	c.source = s.Language.Source
+	c.showSource = s.Language.ShowSource
+	c.sel = selectionFromSettings(s.Input)
+	running := c.running
+	cfg := app.ProviderConfig{
+		Model:          c.model,
+		TargetLanguage: c.target,
+		SourceLanguage: c.source,
+		ShowSource:     c.showSource,
+	}
+	sel := c.sel
+	c.mu.Unlock()
+
+	if err := s.Save(); err != nil {
+		return err
+	}
+	if running && c.r != nil {
+		c.r.SetProviderConfig(cfg)
+		c.r.SetSelection(sel)
+	}
+	return nil
+}
+
+// SaveAPIKey stores (or clears, when empty) the Gemini API key in the Keychain,
+// then refreshes the in-memory key so Start() works without env. 키는 노출하지 않는다.
+func (c *Controller) SaveAPIKey(key string) error {
+	if err := config.SaveAPIKey(key); err != nil {
+		return err
+	}
+	newKey, err := config.APIKey()
+	c.mu.Lock()
+	c.apiKey, c.apiKeyErr = newKey, err
+	c.mu.Unlock()
+	return nil
+}
+
+// TestAPIKey verifies a key and returns "" on success, or a user-facing (키 비포함)
+// error message on failure. 키 값은 결코 로그/반환값에 노출하지 않는다.
+func (c *Controller) TestAPIKey(key string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := config.TestAPIKey(ctx, key); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// HasAPIKey reports whether a usable Gemini API key exists (env 또는 키체인).
+func (c *Controller) HasAPIKey() bool {
+	return config.HasAPIKey()
+}
+
+// -----------------------------------------------------------------------------
+// settings helpers
+// -----------------------------------------------------------------------------
+
+// saveSettings persists a settings snapshot best-effort (로그만, 호출자 흐름 비차단).
+func (c *Controller) saveSettings(s config.Settings) {
+	if err := s.Save(); err != nil {
+		log.Println("[controller] settings save:", err)
+	}
+}
+
+// selectionFromSettings maps persisted InputSettings to an audio.Selection.
+// 알 수 없는 모드는 auto로 폴백한다.
+func selectionFromSettings(in config.InputSettings) audio.Selection {
+	switch in.Mode {
+	case "mic":
+		return audio.Selection{Mode: audio.SelectMic}
+	case "loopback":
+		return audio.Selection{Mode: audio.SelectLoopback}
+	case "device":
+		if in.DeviceID != "" {
+			return audio.Selection{Mode: audio.SelectDevice, DeviceID: in.DeviceID}
+		}
+		return audio.Selection{Mode: audio.SelectAuto}
+	default:
+		return audio.Selection{Mode: audio.SelectAuto}
+	}
+}
+
+// settingsInputFromSelection maps an audio.Selection back to persisted InputSettings.
+func settingsInputFromSelection(sel audio.Selection) config.InputSettings {
+	switch sel.Mode {
+	case audio.SelectMic:
+		return config.InputSettings{Mode: "mic"}
+	case audio.SelectLoopback:
+		return config.InputSettings{Mode: "loopback"}
+	case audio.SelectDevice:
+		return config.InputSettings{Mode: "device", DeviceID: sel.DeviceID}
+	default:
+		return config.InputSettings{Mode: "auto"}
+	}
+}
+
+// normalizeSettings clamps/repairs incoming settings to safe ranges (UI 검증 보조).
+// 빈 필수값은 기본값으로 되돌린다. 자막 색 등 형식 검증은 최소로 유지(후속 웨이브에서 강화).
+func normalizeSettings(s config.Settings) config.Settings {
+	def := config.DefaultSettings()
+	if strings.TrimSpace(s.Language.Target) == "" {
+		s.Language.Target = def.Language.Target
+	}
+	if strings.TrimSpace(s.Language.Source) == "" {
+		s.Language.Source = def.Language.Source
+	}
+	if s.Input.Mode == "" {
+		s.Input.Mode = def.Input.Mode
+	}
+	// 자막 폰트 크기(UI 16..72), 최대 줄수(1..4) 클램프.
+	if s.Subtitle.FontSize < 16 {
+		s.Subtitle.FontSize = 16
+	} else if s.Subtitle.FontSize > 72 {
+		s.Subtitle.FontSize = 72
+	}
+	if s.Subtitle.MaxLines < 1 {
+		s.Subtitle.MaxLines = 1
+	} else if s.Subtitle.MaxLines > 4 {
+		s.Subtitle.MaxLines = 4
+	}
+	if s.Subtitle.GlowRadius < 0 {
+		s.Subtitle.GlowRadius = 0
+	} else if s.Subtitle.GlowRadius > 30 {
+		s.Subtitle.GlowRadius = 30
+	}
+	s.Subtitle.BgOpacity = clamp01(s.Subtitle.BgOpacity)
+	s.Audio.SoftVolume = clamp01(s.Audio.SoftVolume)
+	s.Audio.DuckVolume = clamp01(s.Audio.DuckVolume)
+	if s.Position.MonitorIndex < 0 {
+		s.Position.MonitorIndex = 0
+	}
+	return s
+}
+
+// clamp01 constrains v to [0, 1].
+func clamp01(v float64) float64 {
+	if v < 0 {
+		return 0
+	}
+	if v > 1 {
+		return 1
+	}
+	return v
 }
 
 // -----------------------------------------------------------------------------

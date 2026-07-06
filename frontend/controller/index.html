@@ -28,13 +28,19 @@
     .dot.on { background: #38d15b; box-shadow: 0 0 6px #38d15b; }
     .row { display: flex; align-items: center; gap: 0.4rem; }
     label { font-size: 0.72rem; opacity: 0.7; min-width: 3.2rem; }
-    input[type="text"], select {
+    input[type="text"], input[type="password"], input[type="number"], select {
       flex: 1; background: #26262c; color: #f0f0f2;
       border: 1px solid #3a3a42; border-radius: 6px;
       padding: 0.3rem 0.45rem; font-size: 0.82rem;
-      --wails-draggable: no-drag;
+      --wails-draggable: no-drag; min-width: 0;
     }
+    input[type="color"] {
+      width: 34px; height: 24px; padding: 0; border: 1px solid #3a3a42;
+      border-radius: 5px; background: #26262c; --wails-draggable: no-drag;
+    }
+    input[type="range"] { flex: 1; --wails-draggable: no-drag; }
     .toggle { display: flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; opacity: 0.85; }
+    .toggle input { --wails-draggable: no-drag; }
     .buttons { display: flex; gap: 0.5rem; margin-top: 0.15rem; }
     button {
       flex: 1; padding: 0.45rem 0; font-size: 0.9rem; font-weight: 600;
@@ -46,41 +52,178 @@
     #stop  { background: #333; color: #ddd; }
     #stop:hover { background: #444; }
     button:disabled { opacity: 0.4; cursor: default; }
+    button.mini {
+      flex: 0 0 auto; padding: 0.3rem 0.6rem; font-size: 0.72rem; font-weight: 600;
+      background: #2f3f6a; color: #dde;
+    }
+    button.mini:hover { background: #3a4d82; }
+    button.gear {
+      flex: 0 0 auto; padding: 0.15rem 0.5rem; font-size: 0.8rem; font-weight: 600;
+      background: transparent; color: #b8b8c0; --wails-draggable: no-drag;
+    }
+    button.gear:hover { color: #fff; }
     .status {
       margin-top: auto; font-size: 0.72rem; opacity: 0.7;
       font-variant-numeric: tabular-nums; min-height: 1em;
     }
+    /* Settings panel */
+    #panel { display: none; flex-direction: column; gap: 0.5rem; overflow-y: auto; }
+    #panel.open { display: flex; }
+    #main.hidden { display: none; }
+    .section {
+      border: 1px solid #2c2c34; border-radius: 8px; padding: 0.5rem 0.6rem;
+      display: flex; flex-direction: column; gap: 0.4rem;
+    }
+    .section > .title { font-size: 0.74rem; font-weight: 700; opacity: 0.8; margin-bottom: 0.1rem; }
+    .hint { font-size: 0.68rem; opacity: 0.55; }
+    .keystate { font-size: 0.7rem; }
+    .keystate.saved { color: #38d15b; }
+    .keystate.missing { color: #d1a238; }
+    .keystate.err { color: #e0645b; }
+    .keystate.ok { color: #38d15b; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0.4rem 0.6rem; align-items: center; }
   </style>
 </head>
 <body>
   <div class="wrap">
     <header>
       <span><span id="dot" class="dot"></span>LiveTranslate</span>
-      <span id="ver" style="opacity:0.5;font-weight:400"></span>
+      <span style="display:flex;align-items:center;gap:0.4rem">
+        <button id="gear" class="gear" title="설정">⚙</button>
+        <span id="ver" style="opacity:0.5;font-weight:400"></span>
+      </span>
     </header>
 
-    <div class="row">
-      <label for="target">대상 언어</label>
-      <input id="target" type="text" value="en" placeholder="en / ko / ja" />
+    <!-- Main HUD -->
+    <div id="main" style="display:flex;flex-direction:column;gap:0.55rem;flex:1">
+      <div class="row">
+        <label for="target">대상 언어</label>
+        <input id="target" type="text" value="ko" placeholder="en / ko / ja" />
+      </div>
+
+      <div class="row">
+        <label for="input">입력</label>
+        <select id="input">
+          <option value="auto">자동(auto)</option>
+          <option value="mic">마이크(mic)</option>
+          <option value="loopback">시스템 소리(loopback)</option>
+        </select>
+      </div>
+
+      <label class="toggle">
+        <input id="showSource" type="checkbox" style="--wails-draggable:no-drag" />
+        원문 동시 표시
+      </label>
+
+      <div class="buttons">
+        <button id="start">Start</button>
+        <button id="stop" disabled>Stop</button>
+      </div>
     </div>
 
-    <div class="row">
-      <label for="input">입력</label>
-      <select id="input">
-        <option value="auto">자동(auto)</option>
-        <option value="mic">마이크(mic)</option>
-        <option value="loopback">시스템 소리(loopback)</option>
-      </select>
-    </div>
+    <!-- Settings panel -->
+    <div id="panel">
+      <div class="section">
+        <div class="title">Gemini API 키</div>
+        <div class="row">
+          <input id="apiKey" type="password" placeholder="API 키 입력" autocomplete="off" />
+        </div>
+        <div class="row" style="gap:0.4rem">
+          <button id="testKey" class="mini">연결 테스트</button>
+          <button id="saveKey" class="mini">저장</button>
+          <span id="keyState" class="keystate"></span>
+        </div>
+        <div class="hint">키는 OS 키체인에만 저장되며 설정 파일에는 기록되지 않습니다.</div>
+      </div>
 
-    <label class="toggle">
-      <input id="showSource" type="checkbox" style="--wails-draggable:no-drag" />
-      원문 동시 표시
-    </label>
+      <div class="section">
+        <div class="title">언어 · 입력</div>
+        <div class="row">
+          <label for="sTarget">대상 언어</label>
+          <input id="sTarget" type="text" placeholder="ko / en / ja" />
+        </div>
+        <div class="row">
+          <label for="sSource">소스 언어</label>
+          <input id="sSource" type="text" placeholder="auto" />
+        </div>
+        <div class="row">
+          <label for="sInput">입력</label>
+          <select id="sInput"></select>
+        </div>
+        <label class="toggle">
+          <input id="sShowSource" type="checkbox" /> 원문 동시 표시
+        </label>
+      </div>
 
-    <div class="buttons">
-      <button id="start">Start</button>
-      <button id="stop" disabled>Stop</button>
+      <div class="section">
+        <div class="title">자막 스타일</div>
+        <div class="grid2">
+          <label for="sFontFamily">폰트</label>
+          <input id="sFontFamily" type="text" placeholder="(시스템)" />
+          <label for="sFontSize">크기</label>
+          <input id="sFontSize" type="number" min="16" max="72" step="1" />
+          <label for="sFontWeight">두께</label>
+          <select id="sFontWeight">
+            <option value="regular">보통</option>
+            <option value="medium">중간</option>
+            <option value="semibold">약간 굵게</option>
+            <option value="bold">굵게</option>
+            <option value="heavy">매우 굵게</option>
+            <option value="black">최대</option>
+          </select>
+          <label for="sAlign">정렬</label>
+          <select id="sAlign">
+            <option value="leading">왼쪽</option>
+            <option value="center">가운데</option>
+            <option value="trailing">오른쪽</option>
+          </select>
+          <label for="sTextColor">글자색</label>
+          <span class="row"><input id="sTextColor" type="color" /><input id="sTextAlpha" type="range" min="0" max="255" step="1" /></span>
+          <label for="sStrokeColor">외곽선</label>
+          <span class="row"><input id="sStrokeEnabled" type="checkbox" /><input id="sStrokeColor" type="color" /><input id="sStrokeAlpha" type="range" min="0" max="255" step="1" /></span>
+          <label for="sGlowColor">글로우</label>
+          <span class="row"><input id="sGlowEnabled" type="checkbox" /><input id="sGlowColor" type="color" /><input id="sGlowRadius" type="number" min="0" max="30" step="1" style="max-width:3.4rem" /></span>
+          <label for="sBgColor">배경</label>
+          <span class="row"><input id="sBgEnabled" type="checkbox" /><input id="sBgColor" type="color" /><input id="sBgOpacity" type="range" min="0" max="1" step="0.05" /></span>
+          <label for="sMaxLines">최대 줄수</label>
+          <input id="sMaxLines" type="number" min="1" max="4" step="1" />
+        </div>
+        <div class="hint">스타일 렌더 반영은 다음 업데이트에서 활성화됩니다(저장은 지금 동작).</div>
+      </div>
+
+      <div class="section">
+        <div class="title">위치</div>
+        <div class="grid2">
+          <label for="sMonitorIndex">모니터</label>
+          <input id="sMonitorIndex" type="number" min="0" step="1" />
+          <label for="sVertical">세로 위치</label>
+          <select id="sVertical">
+            <option value="top">위</option>
+            <option value="middle">중앙</option>
+            <option value="bottom">아래</option>
+          </select>
+        </div>
+      </div>
+
+      <div class="section">
+        <div class="title">오디오</div>
+        <label class="toggle"><input id="sPlaybackEnabled" type="checkbox" /> 번역 음성 재생</label>
+        <div class="row"><label for="sSoftVolume">볼륨</label><input id="sSoftVolume" type="range" min="0" max="1" step="0.05" /></div>
+        <label class="toggle"><input id="sDuckEnabled" type="checkbox" /> 원문 덕킹</label>
+        <div class="row"><label for="sDuckVolume">덕 볼륨</label><input id="sDuckVolume" type="range" min="0" max="1" step="0.05" /></div>
+      </div>
+
+      <div class="section">
+        <div class="title">비용 · 녹화 · VAD</div>
+        <label class="toggle"><input id="sCostHud" type="checkbox" /> 비용 HUD 표시</label>
+        <div class="row"><label for="sRecordingDir">녹화 폴더</label><input id="sRecordingDir" type="text" placeholder="(기본: Documents)" /></div>
+        <label class="toggle"><input id="sVadEnabled" type="checkbox" /> VAD(발화 게이트)</label>
+      </div>
+
+      <div class="buttons">
+        <button id="saveSettings" style="background:#2f8f46;color:#fff">설정 저장</button>
+        <button id="closeSettings" style="background:#333;color:#ddd">닫기</button>
+      </div>
     </div>
 
     <div id="status" class="status">idle</div>
@@ -94,6 +237,20 @@
       const dot = $("dot"), statusEl = $("status");
       const startBtn = $("start"), stopBtn = $("stop");
       const targetEl = $("target"), inputEl = $("input"), showSrcEl = $("showSource");
+      const panel = $("panel"), mainView = $("main");
+
+      // ---- color helpers: "#RRGGBBAA" <-> (#RRGGBB, alpha 0..255) ----
+      function splitHexA(hex) {
+        const s = (hex || "#FFFFFFFF").replace("#", "");
+        const rgb = "#" + s.slice(0, 6).padEnd(6, "F");
+        const a = s.length >= 8 ? parseInt(s.slice(6, 8), 16) : 255;
+        return { rgb, a: isNaN(a) ? 255 : a };
+      }
+      function joinHexA(rgb, a) {
+        const base = (rgb || "#FFFFFF").replace("#", "").slice(0, 6).padEnd(6, "F");
+        const ah = Math.max(0, Math.min(255, a | 0)).toString(16).padStart(2, "0");
+        return ("#" + base + ah).toUpperCase();
+      }
 
       function setRunningUI(running) {
         dot.classList.toggle("on", !!running);
@@ -104,7 +261,7 @@
       async function start() {
         const c = bind(); if (!c) return;
         try {
-          await c.SetTarget(targetEl.value.trim() || "en");
+          await c.SetTarget(targetEl.value.trim() || "ko");
           await c.SetInput(inputEl.value);
           await c.SetShowSource(showSrcEl.checked);
           await c.Start();
@@ -124,14 +281,231 @@
       inputEl.addEventListener("change", () => { const c = bind(); if (c) c.SetInput(inputEl.value); });
       showSrcEl.addEventListener("change", () => { const c = bind(); if (c) c.SetShowSource(showSrcEl.checked); });
 
+      // ---- Settings panel ----
+      async function populateInputOptions(sel, current) {
+        const c = bind();
+        // Base options mirror the main HUD picker.
+        const opts = [
+          { value: "auto", label: "자동(auto)" },
+          { value: "mic", label: "마이크(mic)" },
+          { value: "loopback", label: "시스템 소리(loopback)" },
+        ];
+        let devices = [];
+        try { devices = (c && (await c.ListDevices())) || []; } catch (_) {}
+        for (const d of devices) {
+          const id = d && (d.ID || d.id);
+          const name = d && (d.Name || d.name);
+          if (id) opts.push({ value: "device:" + id, label: (name || id) });
+        }
+        sel.innerHTML = "";
+        for (const o of opts) {
+          const el = document.createElement("option");
+          el.value = o.value; el.textContent = o.label;
+          sel.appendChild(el);
+        }
+        if (current) sel.value = current;
+      }
+
+      function inputToSelectValue(input) {
+        if (!input) return "auto";
+        if (input.mode === "device" && input.deviceID) return "device:" + input.deviceID;
+        return input.mode || "auto";
+      }
+      function selectValueToInput(v) {
+        if (!v) return { mode: "auto", deviceID: "" };
+        if (v.indexOf("device:") === 0) return { mode: "device", deviceID: v.slice(7) };
+        return { mode: v, deviceID: "" };
+      }
+
+      async function loadSettingsIntoForm() {
+        const c = bind(); if (!c) return;
+        let s;
+        try { s = await c.GetSettings(); } catch (e) { statusEl.textContent = "설정 로드 실패: " + e; return; }
+
+        $("sTarget").value = s.language.target || "";
+        $("sSource").value = s.language.source || "";
+        $("sShowSource").checked = !!s.language.showSource;
+        await populateInputOptions($("sInput"), inputToSelectValue(s.input));
+
+        const sub = s.subtitle || {};
+        $("sFontFamily").value = sub.fontFamily || "";
+        $("sFontSize").value = sub.fontSize;
+        $("sFontWeight").value = sub.fontWeight || "bold";
+        $("sAlign").value = sub.align || "center";
+        { const t = splitHexA(sub.textColor); $("sTextColor").value = t.rgb; $("sTextAlpha").value = t.a; }
+        $("sStrokeEnabled").checked = !!sub.strokeEnabled;
+        { const t = splitHexA(sub.strokeColor); $("sStrokeColor").value = t.rgb; $("sStrokeAlpha").value = t.a; }
+        $("sGlowEnabled").checked = !!sub.glowEnabled;
+        { const t = splitHexA(sub.glowColor); $("sGlowColor").value = t.rgb; }
+        $("sGlowRadius").value = sub.glowRadius;
+        $("sBgEnabled").checked = !!sub.bgEnabled;
+        { const t = splitHexA(sub.bgColor); $("sBgColor").value = t.rgb; }
+        $("sBgOpacity").value = sub.bgOpacity;
+        $("sMaxLines").value = sub.maxLines;
+
+        $("sMonitorIndex").value = (s.position && s.position.monitorIndex) || 0;
+        $("sVertical").value = (s.position && s.position.vertical) || "bottom";
+
+        const au = s.audio || {};
+        $("sPlaybackEnabled").checked = !!au.playbackEnabled;
+        $("sSoftVolume").value = au.softVolume;
+        $("sDuckEnabled").checked = !!au.duckEnabled;
+        $("sDuckVolume").value = au.duckVolume;
+
+        $("sCostHud").checked = !!(s.cost && s.cost.hudEnabled);
+        $("sRecordingDir").value = (s.recording && s.recording.directory) || "";
+        $("sVadEnabled").checked = !!(s.vad && s.vad.enabled);
+
+        // Keep a copy of non-edited fields (e.g. cumulativeUSD, outputDeviceID) to preserve.
+        window.__settings = s;
+
+        refreshKeyState();
+      }
+
+      function formToSettings() {
+        const base = window.__settings || {};
+        const s = JSON.parse(JSON.stringify(base));
+        s.language = s.language || {};
+        s.language.target = $("sTarget").value.trim();
+        s.language.source = $("sSource").value.trim();
+        s.language.showSource = $("sShowSource").checked;
+        s.input = selectValueToInput($("sInput").value);
+
+        s.subtitle = s.subtitle || {};
+        s.subtitle.fontFamily = $("sFontFamily").value;
+        s.subtitle.fontSize = parseFloat($("sFontSize").value) || 34;
+        s.subtitle.fontWeight = $("sFontWeight").value;
+        s.subtitle.align = $("sAlign").value;
+        s.subtitle.textColor = joinHexA($("sTextColor").value, parseInt($("sTextAlpha").value, 10));
+        s.subtitle.strokeEnabled = $("sStrokeEnabled").checked;
+        s.subtitle.strokeColor = joinHexA($("sStrokeColor").value, parseInt($("sStrokeAlpha").value, 10));
+        s.subtitle.glowEnabled = $("sGlowEnabled").checked;
+        s.subtitle.glowColor = joinHexA($("sGlowColor").value, splitHexA(s.subtitle.glowColor).a);
+        s.subtitle.glowRadius = parseFloat($("sGlowRadius").value) || 0;
+        s.subtitle.bgEnabled = $("sBgEnabled").checked;
+        s.subtitle.bgColor = joinHexA($("sBgColor").value, 255);
+        s.subtitle.bgOpacity = parseFloat($("sBgOpacity").value);
+        s.subtitle.maxLines = parseInt($("sMaxLines").value, 10) || 2;
+
+        s.position = s.position || {};
+        s.position.monitorIndex = parseInt($("sMonitorIndex").value, 10) || 0;
+        s.position.vertical = $("sVertical").value;
+
+        s.audio = s.audio || {};
+        s.audio.playbackEnabled = $("sPlaybackEnabled").checked;
+        s.audio.softVolume = parseFloat($("sSoftVolume").value);
+        s.audio.duckEnabled = $("sDuckEnabled").checked;
+        s.audio.duckVolume = parseFloat($("sDuckVolume").value);
+
+        s.cost = s.cost || {};
+        s.cost.hudEnabled = $("sCostHud").checked;
+
+        s.recording = s.recording || {};
+        s.recording.directory = $("sRecordingDir").value;
+
+        s.vad = s.vad || {};
+        s.vad.enabled = $("sVadEnabled").checked;
+        return s;
+      }
+
+      async function refreshKeyState() {
+        const c = bind(); if (!c) return;
+        try {
+          const has = await c.HasAPIKey();
+          const el = $("keyState");
+          el.className = "keystate " + (has ? "saved" : "missing");
+          el.textContent = has ? "저장됨" : "미설정";
+        } catch (_) {}
+      }
+
+      async function openSettings() {
+        panel.classList.add("open");
+        mainView.classList.add("hidden");
+        // Grow the window so the panel fits (best-effort).
+        try { if (window.runtime && window.runtime.WindowSetSize) window.runtime.WindowSetSize(400, 640); } catch (_) {}
+        await loadSettingsIntoForm();
+      }
+      function closeSettings() {
+        panel.classList.remove("open");
+        mainView.classList.remove("hidden");
+        try { if (window.runtime && window.runtime.WindowSetSize) window.runtime.WindowSetSize(380, 280); } catch (_) {}
+        // Reflect any language/input changes back into the main HUD.
+        syncMainFromSettings();
+      }
+
+      async function syncMainFromSettings() {
+        const c = bind(); if (!c) return;
+        try {
+          const s = await c.GetSettings();
+          targetEl.value = s.language.target || "";
+          showSrcEl.checked = !!s.language.showSource;
+          const iv = inputToSelectValue(s.input);
+          // Main input select only knows auto/mic/loopback; device falls back visually to auto.
+          inputEl.value = ["auto", "mic", "loopback"].indexOf(iv) >= 0 ? iv : "auto";
+        } catch (_) {}
+      }
+
+      $("gear").addEventListener("click", () => {
+        if (panel.classList.contains("open")) closeSettings(); else openSettings();
+      });
+      $("closeSettings").addEventListener("click", closeSettings);
+
+      $("saveSettings").addEventListener("click", async () => {
+        const c = bind(); if (!c) return;
+        try {
+          await c.SaveSettings(formToSettings());
+          statusEl.textContent = "설정 저장됨";
+          await loadSettingsIntoForm();
+        } catch (e) {
+          statusEl.textContent = "설정 저장 실패: " + e;
+        }
+      });
+
+      $("saveKey").addEventListener("click", async () => {
+        const c = bind(); if (!c) return;
+        const el = $("keyState");
+        try {
+          await c.SaveAPIKey($("apiKey").value);
+          $("apiKey").value = "";
+          el.className = "keystate ok"; el.textContent = "저장 완료";
+          await refreshKeyState();
+        } catch (e) {
+          el.className = "keystate err"; el.textContent = "저장 실패: " + e;
+        }
+      });
+
+      $("testKey").addEventListener("click", async () => {
+        const c = bind(); if (!c) return;
+        const el = $("keyState");
+        el.className = "keystate"; el.textContent = "테스트 중…";
+        try {
+          const msg = await c.TestAPIKey($("apiKey").value);
+          if (!msg) { el.className = "keystate ok"; el.textContent = "연결 성공"; }
+          else { el.className = "keystate err"; el.textContent = msg; }
+        } catch (e) {
+          el.className = "keystate err"; el.textContent = "테스트 실패: " + e;
+        }
+      });
+
       // Status: react to pushed events + poll as a fallback.
       function onStatus(s) { if (typeof s === "string") statusEl.textContent = s; }
+      async function initMainFromSettings() {
+        const c = bind(); if (!c) return;
+        try {
+          const s = await c.GetSettings();
+          targetEl.value = s.language.target || "ko";
+          showSrcEl.checked = !!s.language.showSource;
+          const iv = inputToSelectValue(s.input);
+          inputEl.value = ["auto", "mic", "loopback"].indexOf(iv) >= 0 ? iv : "auto";
+        } catch (_) {}
+      }
       function wire() {
         if (window.runtime && window.runtime.EventsOn) {
           window.runtime.EventsOn("status:update", onStatus);
         }
         const app = window.go && window.go.main && window.go.main.App;
         if (app && app.CurrentVersion) app.CurrentVersion().then((v) => { $("ver").textContent = v; }).catch(() => {});
+        initMainFromSettings();
       }
       async function poll() {
         const c = bind();

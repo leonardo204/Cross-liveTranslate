@@ -84,10 +84,13 @@ func (s *MalgoSource) Start(ctx context.Context, onChunk func(Chunk)) error {
 	deviceConfig.SampleRate = SampleRate
 
 	// 특정 캡처 장치 선택: EnumerateDevices의 DeviceInfo.ID(malgo DeviceID hex)와 매칭해
-	// 그 장치의 malgo.DeviceID 포인터를 Capture.DeviceID로 지정한다. miniaudio가 InitDevice
-	// 시점에 값을 복사하므로 Go 메모리 포인터를 넘겨도 안전하다(runtime.KeepAlive로 보장).
-	// deviceID가 비어 있으면 기본 장치(nil).
+	// 그 장치의 malgo.DeviceID 포인터를 Capture.DeviceID로 지정한다.
+	// Go 1.26 cgocheck는 C(InitDevice)로 넘어가는 구조체 내부의 Go 포인터를 거부하므로
+	// runtime.Pinner로 &selectedID를 핀해 전달을 허용한다(Start 반환 시 Unpin). miniaudio는
+	// InitDevice 시점에 값을 복사하므로 그 이후엔 핀이 필요 없다. deviceID가 비면 기본 장치(nil).
 	var selectedID malgo.DeviceID
+	var pinner runtime.Pinner
+	defer pinner.Unpin()
 	if s.deviceID != "" {
 		devs, derr := mctx.Devices(malgo.Capture)
 		if derr != nil {
@@ -108,6 +111,7 @@ func (s *MalgoSource) Start(ctx context.Context, onChunk func(Chunk)) error {
 			mctx.Free()
 			return fmt.Errorf("audio: capture device %q not found", s.deviceID)
 		}
+		pinner.Pin(&selectedID)
 		deviceConfig.Capture.DeviceID = unsafe.Pointer(&selectedID)
 	}
 
@@ -133,8 +137,7 @@ func (s *MalgoSource) Start(ctx context.Context, onChunk func(Chunk)) error {
 	}
 
 	device, err := malgo.InitDevice(mctx.Context, deviceConfig, malgo.DeviceCallbacks{Data: onRecv})
-	// selectedID는 InitDevice가 값을 복사할 때까지 살아있어야 한다(GC/이동 방지).
-	runtime.KeepAlive(selectedID)
+	// selectedID는 pinner가 Start 반환까지 핀 유지(InitDevice가 값 복사 완료 후 안전).
 	if err != nil {
 		_ = mctx.Uninit()
 		mctx.Free()

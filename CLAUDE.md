@@ -25,7 +25,7 @@
 | 기술 스택 | Go 1.22+, Wails v2, 웹뷰 프론트엔드, malgo(오디오), go-keyring |
 | 빌드 방법 | `wails build` / mac→win: `wails build -platform windows/amd64` |
 | 자동 업데이트 | GitHub Releases + `latest.json` + minisign(Ed25519) + self-apply |
-| v1 엔진 | Gemini Live 전용 (Apple 온디바이스 경로는 v1 제외) |
+| 번역 엔진 | Gemini Live 전용 (Apple 온디바이스 경로 미지원) |
 | 상태 | 이식 초기 (P0 스캐폴드) |
 | 원본 | `~/work/liveTranslate` (macOS/Swift, Sparkle) |
 | 레퍼런스 | `~/work/confUploader`, `~/work/flipMd-Go` (Go/Wails 자동업데이트) |

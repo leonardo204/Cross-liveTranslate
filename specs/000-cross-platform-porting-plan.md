@@ -16,7 +16,7 @@
 | 시크릿 저장 | **go-keyring** (mac Keychain / win Credential Manager) | 원본 Keychain 일원화 정책 유지. |
 | 설정 저장 | JSON 파일(`os.UserConfigDir`) | 원본 UserDefaults 대체. 결정적 기본값 유지. |
 
-**v1 제외(→ v2 백로그):** Apple 온디바이스 오프라인 엔진, whisper.cpp STT, 로컬 MT(NLLB/CTranslate2). 관련 원본 스펙 003/007은 참고용으로 보존하되 "v1 범위 외" 표기.
+**미지원(이 크로스앱 범위 아님):** Apple 온디바이스 오프라인 엔진(SpeechTranscriber/Translation)은 크로스플랫폼 등가물이 없고 지원 계획도 없어 **완전 제외**한다. 관련 원본 스펙 003/007은 **삭제**했다. whisper.cpp STT·로컬 MT(NLLB/CTranslate2)도 현재 대상이 아니다(향후 필요 시 신규 스펙으로 재도입).
 
 ---
 
@@ -46,7 +46,7 @@
 | F18 | 멀티모니터/위치 | `NSScreen`+오버레이 컨트롤러 | 플랫폼 모니터 열거 | 🟡 |
 | F19 | 무중단 재연결 | sessionResumption/goAway/14분 선제 | F1과 함께 포팅 | 🟢 |
 | F20 | 자동 업데이트 | Sparkle | minisign + self-apply | 🟡 |
-| ~~F21~~ | ~~Apple 온디바이스 STT+MT~~ | ~~AppleSpeech+Translation~~ | **v1 제외** | 🔴 |
+| ~~F21~~ | ~~Apple 온디바이스 STT+MT~~ | ~~AppleSpeech+Translation~~ | **미지원(삭제)** | 🔴 |
 
 ### 반드시 보존할 정확성 불변식 (원본 spec 근거)
 1. **reconciler 단일직렬 + epoch 펜싱** — 활성 provider ≤1, teardown 무중첩, stale 이벤트 폐기 (원본 004 §7).
@@ -165,7 +165,7 @@ confUploader 하드닝 방식을 그대로 채택:
 ## 9. 참고 자산
 - **자동업데이트 레퍼런스**: `~/work/confUploader`(DMG+self-apply), `~/work/flipMd-Go`(tar.gz+helper). 스킬 `desktop-app-auto-update`(custom-go-wails).
 - **빌드 매트릭스**: 스킬 `wails-cross-platform-go`.
-- **원본 스펙**: `specs/001~008`(이식 시 참조), 특히 002(Gemini/오디오), 004(파이프라인), 008(자막).
+- **원본 스펙**: `specs/001,002,004,005,006,008`(이식 시 참조), 특히 002(Gemini/오디오), 004(파이프라인), 008(자막). *(003/007=Apple 온디바이스는 미지원으로 삭제)*
 
 ---
 

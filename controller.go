@@ -22,18 +22,23 @@ import (
 	"math"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"cross-livetranslate/internal/app"
 	"cross-livetranslate/internal/audio"
 	"cross-livetranslate/internal/config"
+	"cross-livetranslate/internal/cost"
 	"cross-livetranslate/internal/gemini"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/pipeline"
+	"cross-livetranslate/internal/recording"
 	"cross-livetranslate/internal/subtitle"
 	"cross-livetranslate/internal/tray"
+	"cross-livetranslate/internal/vad"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -78,6 +83,20 @@ type Controller struct {
 	// (Enqueue/Flush는 runLoop, Start/Stop/게인·덕킹 정책은 바인딩 goroutine이 호출).
 	player *audio.Player
 	ducker audio.Ducker
+
+	// 비용 추정(A Wave3). estimator/recorder는 start()에서 1회 생성되는 안정 포인터다.
+	// estimator: 세션/누적 USD. Add/Session/Cumulative는 내부 mutex로 보호되어 어느
+	// goroutine에서 호출해도 안전하다(입력 계량은 runLoop tick, 출력 토큰은 applyEvent).
+	estimator *cost.Estimator
+	// recorder: 확정 자막 파일 기록. WriteLine은 runLoop(OnConfirmedLine), Start/Stop은
+	// 바인딩 goroutine — recorder가 자체 mutex로 동기화한다.
+	recorder *recording.Recorder
+	// sentSamples는 VAD 게이트를 통과해 실제 송신된 16kHz mono 샘플 누적(입력 비용 근거).
+	// countingSource(오디오 dispatch goroutine)가 더하고 runLoop tick이 델타를 소비한다.
+	sentSamples atomic.Int64
+	// lastSentSamples/lastCumSave는 runLoop 단독 접근(비용 델타·누적 저장 스로틀).
+	lastSentSamples int64
+	lastCumSave     time.Time
 
 	// overlay 자식 프로세스.
 	child      *exec.Cmd
@@ -143,6 +162,13 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	c.player = audio.NewPlayer()
 	c.ducker = audio.NewDucker()
 
+	// 비용/녹화(A Wave3): estimator는 영속된 누적 USD로 시드하고, recorder는 닫힌 상태로 생성.
+	c.mu.Lock()
+	seedCum := c.settings.Cost.CumulativeUSD
+	c.mu.Unlock()
+	c.estimator = cost.New(seedCum)
+	c.recorder = recording.New()
+
 	// 팩토리 주입: reconciler는 gemini/malgo에 직접 의존하지 않는다(headless와 동일).
 	newProvider := func(cfg app.ProviderConfig) (pipeline.Provider, error) {
 		return gemini.NewProvider(gemini.Config{
@@ -156,7 +182,18 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 		}), nil
 	}
 	newSource := func(s audio.Selection) (audio.Source, error) {
-		return audio.SelectSource(s)
+		src, err := audio.SelectSource(s)
+		if err != nil {
+			return nil, err
+		}
+		// VAD(A Wave3): 설정이 켜져 있으면 에너지 게이트로 감싸 발화 청크만 통과시킨다
+		// (무음 구간 미전송 → API 입력/출력 비용 절감). 꺼져 있으면 bypass(원본 그대로).
+		c.mu.Lock()
+		vadOn := c.settings.VAD.Enabled
+		c.mu.Unlock()
+		src = vad.WrapSource(src, vadOn)
+		// 입력 비용 계량: 실제 송신되는(게이트 통과 후) 청크의 샘플 수를 누적한다.
+		return c.countingSource(src), nil
 	}
 	onEvent := func(ev pipeline.Event) {
 		select {
@@ -243,6 +280,13 @@ func (c *Controller) pushSubtitle(msg ipc.SubtitleMsg) {
 // any change (throttled to actual state transitions).
 func (c *Controller) runLoop() {
 	eng := subtitle.New()
+	// 자막 확정 줄을 녹화기로 흘린다(A Wave3). recorder가 닫혀 있으면 WriteLine은 무시된다.
+	// OnConfirmedLine은 이 goroutine(runLoop)에서 호출되고 recorder는 자체 mutex를 가진다.
+	eng.OnConfirmedLine = func(source, translation string) {
+		if c.recorder != nil {
+			c.recorder.WriteLine(time.Now(), source, translation)
+		}
+	}
 
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
@@ -279,6 +323,7 @@ func (c *Controller) runLoop() {
 		case now := <-ticker.C:
 			eng.Heartbeat(now)
 			maybePush()
+			c.accountInputCost(now)
 			statsTick++
 			if statsTick%20 == 0 { // 250ms × 20 ≈ 5s
 				logPlayerStats()
@@ -374,7 +419,12 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 		// 세션 종료 — 재생 정지 + 원음 볼륨 복원.
 		c.applyAudioPolicy(audioCfg, false)
 	case pipeline.Usage:
-		// P3b는 비용 소비 없음 — 무시.
+		// 비용 추정(A Wave3): 서버 usageMetadata의 출력 오디오 토큰을 누적한다(출력 비용).
+		// 입력 비용은 송신 계량(accountInputCost)이 담당한다.
+		if c.estimator != nil && ev.Usage != nil {
+			c.estimator.AddOutputTokens(ev.Usage.OutputAudioTokens)
+			c.emitCost()
+		}
 	}
 }
 
@@ -456,6 +506,11 @@ func (c *Controller) wantSource() bool {
 // shutdown kills the overlay child and tears down the reconciler. Idempotent.
 func (c *Controller) shutdown() {
 	c.closeOnce.Do(func() {
+		// 자막 녹화 종료 + 누적 비용 영속화(A Wave3) — 종료 시 파일 핸들/누적을 안전히 마감한다.
+		if c.recorder != nil {
+			_ = c.recorder.Stop()
+		}
+		c.persistCumulative()
 		// 번역 음성 재생 정지 + 원음 볼륨 복원(A3) — 프로세스 종료 시 시스템 볼륨을 남기지 않는다.
 		if c.player != nil {
 			_ = c.player.Stop()
@@ -523,6 +578,11 @@ func (c *Controller) Start() error {
 	c.mu.Unlock()
 
 	c.r.SetDesired(d)
+	// 비용(A Wave3): 새 세션이므로 세션 비용을 0에서 시작한다(누적은 유지). HUD를 즉시 갱신.
+	if c.estimator != nil {
+		c.estimator.ResetSession()
+		c.emitCost()
+	}
 	// 재생/덕킹 정책 적용(재생 켜짐 + 실행 중일 때 player.Start + 게인보상 + 덕킹).
 	c.applyAudioPolicy(audioCfg, true)
 	c.emitStatus()
@@ -541,6 +601,8 @@ func (c *Controller) Stop() error {
 	}
 	// 재생 정지 + 원음 볼륨 복원(running=false).
 	c.applyAudioPolicy(audioCfg, false)
+	// 비용(A Wave3): 세션 종료 시 누적 비용을 영속화한다.
+	c.persistCumulative()
 	c.emitStatus()
 	return nil
 }
@@ -786,6 +848,134 @@ func clamp01(v float64) float64 {
 		return 1
 	}
 	return v
+}
+
+// -----------------------------------------------------------------------------
+// cost + recording (A Wave3)
+// -----------------------------------------------------------------------------
+
+// countingSource wraps a source so every forwarded chunk's sample count is added
+// to c.sentSamples (입력 비용 근거). 게이트 통과 후 실제 송신될 청크만 계량된다.
+type countingSource struct {
+	src   audio.Source
+	total *atomic.Int64
+}
+
+func (c *Controller) countingSource(src audio.Source) audio.Source {
+	return &countingSource{src: src, total: &c.sentSamples}
+}
+
+func (s *countingSource) Start(ctx context.Context, onChunk func(audio.Chunk)) error {
+	return s.src.Start(ctx, func(chunk audio.Chunk) {
+		s.total.Add(int64(len(chunk)))
+		onChunk(chunk)
+	})
+}
+
+func (s *countingSource) Stop() error { return s.src.Stop() }
+
+// accountInputCost folds newly-sent audio samples into the estimator and refreshes
+// the HUD. runLoop 단독 호출(tick) — sentSamples 델타를 소비하고 누적 비용을 주기적으로 영속화한다.
+func (c *Controller) accountInputCost(now time.Time) {
+	if c.estimator == nil {
+		return
+	}
+	cur := c.sentSamples.Load()
+	if delta := cur - c.lastSentSamples; delta > 0 {
+		c.lastSentSamples = cur
+		c.estimator.AddSentSamples(int(delta))
+		c.emitCost()
+	}
+	// 누적 비용을 ~10초마다 settings.json에 영속화(프로세스 급종료 대비). 변경 없으면 no-op.
+	if now.Sub(c.lastCumSave) >= 10*time.Second {
+		c.lastCumSave = now
+		c.persistCumulative()
+	}
+}
+
+// emitCost pushes the current session/cumulative USD to the HUD (HUDEnabled일 때만).
+// 어느 goroutine에서든 호출 가능(estimator/EventsEmit 모두 스레드-세이프).
+func (c *Controller) emitCost() {
+	if c.ctx == nil || c.estimator == nil {
+		return
+	}
+	c.mu.Lock()
+	hud := c.settings.Cost.HUDEnabled
+	c.mu.Unlock()
+	if !hud {
+		return
+	}
+	wruntime.EventsEmit(c.ctx, "cost:update", map[string]float64{
+		"session":    c.estimator.Session(),
+		"cumulative": c.estimator.Cumulative(),
+	})
+}
+
+// persistCumulative writes the estimator's cumulative USD into settings.json (best-effort).
+func (c *Controller) persistCumulative() {
+	if c.estimator == nil {
+		return
+	}
+	c.mu.Lock()
+	c.settings.Cost.CumulativeUSD = c.estimator.Cumulative()
+	snap := c.settings
+	c.mu.Unlock()
+	c.saveSettings(snap)
+}
+
+// StartRecording opens a subtitle recording file in Settings.Recording.Directory.
+// filename이 비어 있으면 타임스탬프 기본 이름(subtitles-YYYYMMDD-HHMMSS.txt)을 쓴다.
+// append=true면 이어붙이기, false면 새로쓰기. 확정 자막이 들어올 때마다 한 줄씩 기록된다.
+func (c *Controller) StartRecording(filename string, appendMode bool) error {
+	if c.recorder == nil {
+		return errors.New("controller: recorder not initialized")
+	}
+	c.mu.Lock()
+	dir := c.settings.Recording.Directory
+	c.mu.Unlock()
+	if strings.TrimSpace(dir) == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			dir = filepath.Join(home, "Documents")
+		}
+	}
+	name := strings.TrimSpace(filename)
+	if name == "" {
+		name = "subtitles-" + time.Now().Format("20060102-150405") + ".txt"
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return err
+	}
+	path := filepath.Join(dir, name)
+	if err := c.recorder.Start(path, appendMode); err != nil {
+		return err
+	}
+	log.Printf("[controller] 자막 녹화 시작: %s (append=%v)", path, appendMode)
+	c.emitRecording()
+	return nil
+}
+
+// StopRecording closes the current recording file (멱등).
+func (c *Controller) StopRecording() error {
+	if c.recorder == nil {
+		return nil
+	}
+	err := c.recorder.Stop()
+	log.Println("[controller] 자막 녹화 종료")
+	c.emitRecording()
+	return err
+}
+
+// IsRecording reports whether subtitle recording is active.
+func (c *Controller) IsRecording() bool {
+	return c.recorder != nil && c.recorder.IsRecording()
+}
+
+// emitRecording pushes the current recording state to the HUD (best-effort).
+func (c *Controller) emitRecording() {
+	if c.ctx == nil {
+		return
+	}
+	wruntime.EventsEmit(c.ctx, "recording:update", c.IsRecording())
 }
 
 // -----------------------------------------------------------------------------

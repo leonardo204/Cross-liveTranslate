@@ -119,6 +119,19 @@
         <button id="start">Start</button>
         <button id="stop" disabled>Stop</button>
       </div>
+
+      <!-- 비용 HUD (cost:update 수신, HUDEnabled일 때만 표시) -->
+      <div id="costHud" class="row" style="display:none;font-size:0.72rem;opacity:0.8;font-variant-numeric:tabular-nums;gap:0.9rem">
+        <span>세션 <b id="costSession">$0.0000</b></span>
+        <span>누적 <b id="costCumulative">$0.0000</b></span>
+      </div>
+
+      <!-- 자막 녹화 (recording:update 수신) -->
+      <div class="row" style="gap:0.4rem">
+        <button id="recordBtn" class="mini">● 녹화 시작</button>
+        <label class="toggle" style="margin-left:auto"><input id="recordAppend" type="checkbox" /> 이어쓰기</label>
+        <span id="recordState" class="hint"></span>
+      </div>
     </div>
 
     <!-- Settings panel -->
@@ -277,6 +290,38 @@
 
       startBtn.addEventListener("click", start);
       stopBtn.addEventListener("click", stop);
+
+      // ---- Cost HUD ----
+      function fmtUSD(v) { return "$" + (Number(v) || 0).toFixed(4); }
+      function onCost(payload) {
+        if (!payload) return;
+        $("costSession").textContent = fmtUSD(payload.session);
+        $("costCumulative").textContent = fmtUSD(payload.cumulative);
+        $("costHud").style.display = "flex"; // 이벤트가 오면(HUDEnabled) 표시.
+      }
+
+      // ---- Subtitle recording ----
+      function setRecordingUI(on) {
+        const btn = $("recordBtn"), st = $("recordState");
+        btn.textContent = on ? "■ 녹화 중지" : "● 녹화 시작";
+        btn.style.background = on ? "#8a2f2f" : "#2f3f6a";
+        st.textContent = on ? "녹화 중" : "";
+      }
+      async function toggleRecording() {
+        const c = bind(); if (!c) return;
+        try {
+          if (await c.IsRecording()) {
+            await c.StopRecording();
+            setRecordingUI(false);
+          } else {
+            await c.StartRecording("", $("recordAppend").checked);
+            setRecordingUI(true);
+          }
+        } catch (e) {
+          $("recordState").textContent = "녹화 오류: " + e;
+        }
+      }
+      $("recordBtn").addEventListener("click", toggleRecording);
       targetEl.addEventListener("change", () => { const c = bind(); if (c) c.SetTarget(targetEl.value.trim()); });
       inputEl.addEventListener("change", () => { const c = bind(); if (c) c.SetInput(inputEl.value); });
       showSrcEl.addEventListener("change", () => { const c = bind(); if (c) c.SetShowSource(showSrcEl.checked); });
@@ -497,11 +542,20 @@
           showSrcEl.checked = !!s.language.showSource;
           const iv = inputToSelectValue(s.input);
           inputEl.value = ["auto", "mic", "loopback"].indexOf(iv) >= 0 ? iv : "auto";
+          // 비용 HUD는 HUDEnabled일 때 표시(값은 cost:update로 갱신).
+          if (s.cost && s.cost.hudEnabled) {
+            $("costHud").style.display = "flex";
+            $("costCumulative").textContent = fmtUSD(s.cost.cumulativeUSD);
+          } else {
+            $("costHud").style.display = "none";
+          }
         } catch (_) {}
       }
       function wire() {
         if (window.runtime && window.runtime.EventsOn) {
           window.runtime.EventsOn("status:update", onStatus);
+          window.runtime.EventsOn("cost:update", onCost);
+          window.runtime.EventsOn("recording:update", (on) => setRecordingUI(!!on));
         }
         const app = window.go && window.go.main && window.go.main.App;
         if (app && app.CurrentVersion) app.CurrentVersion().then((v) => { $("ver").textContent = v; }).catch(() => {});
@@ -511,8 +565,8 @@
         const c = bind();
         if (c) {
           try {
-            const [s, running] = await Promise.all([c.Status(), c.IsRunning()]);
-            onStatus(s); setRunningUI(running);
+            const [s, running, rec] = await Promise.all([c.Status(), c.IsRunning(), c.IsRecording()]);
+            onStatus(s); setRunningUI(running); setRecordingUI(!!rec);
           } catch (_) {}
         }
         setTimeout(poll, 1000);

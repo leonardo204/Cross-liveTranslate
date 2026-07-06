@@ -1,0 +1,40 @@
+
+# Claude Code runtime
+.claude/db/context.db
+.claude/.ctx_state
+.claude/.backup-*
+.claude/.ralph_state
+.claude/.hud_cache
+.claude/.cost_state
+.claude/.hook_feedback
+.claude/.project_root
+.claude/.messenger_enabled
+
+# Go build artifacts
+/cross-livetranslate
+/cross-livetranslate.exe
+/bin/
+/dist/
+/coverage.out
+/coverage.html
+*.test
+
+# Wails build artifacts
+/build/bin/
+/frontend/dist/
+/frontend/node_modules/
+/frontend/wailsjs/
+*.syso
+
+# Env / release secrets
+.env
+*.key
+*.dmg
+*.minisig
+latest.json
+
+# Node
+node_modules/
+
+# macOS
+.DS_Store

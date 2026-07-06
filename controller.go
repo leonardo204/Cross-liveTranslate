@@ -77,6 +77,11 @@ type Controller struct {
 	child      *exec.Cmd
 	childStdin io.WriteCloser
 
+	// styleCh carries subtitle-style/position snapshots into runLoop so that all
+	// stdin writes (subtitle + style) happen from the single runLoop goroutine
+	// (stdin 단일 writer 불변식 유지 → 레이스 없음). 버퍼로 non-blocking push.
+	styleCh chan ipc.StyleMsg
+
 	closeOnce sync.Once
 }
 
@@ -89,6 +94,7 @@ func newController() *Controller {
 		sel:      audio.Selection{Mode: audio.SelectAuto},
 		status:   "idle",
 		events:   make(chan pipeline.Event, 256),
+		styleCh:  make(chan ipc.StyleMsg, 8),
 		settings: config.DefaultSettings(),
 	}
 }
@@ -152,6 +158,20 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 
 	c.spawnOverlay()
 	go c.runLoop()
+
+	// 초기 스타일/위치를 오버레이에 전달한다. 오버레이 프론트가 "style:update"를 구독하기
+	// 전에 첫 emit이 유실될 수 있으므로(Wails 이벤트는 미구독 시 버퍼링 안 됨), DOM 배선
+	// 레이스를 덮도록 잠깐 간격으로 몇 차례 재전송한다. 스타일 적용은 idempotent다.
+	go func() {
+		for i := 0; i < 3; i++ {
+			c.queueStyle()
+			select {
+			case <-ctx.Done():
+				return
+			case <-time.After(600 * time.Millisecond):
+			}
+		}
+	}()
 
 	c.initTray()
 
@@ -236,7 +256,56 @@ func (c *Controller) runLoop() {
 		case ev := <-c.events:
 			c.applyEvent(eng, ev)
 			maybePush()
+		case sm := <-c.styleCh:
+			c.pushStyle(sm)
 		}
+	}
+}
+
+// pushStyle writes a style/position snapshot to the overlay child's stdin.
+// runLoop 단독 호출(직렬) — pushSubtitle과 같은 goroutine이라 stdin 단일 writer 유지.
+func (c *Controller) pushStyle(msg ipc.StyleMsg) {
+	if c.childStdin == nil {
+		return
+	}
+	if err := ipc.WriteStyle(c.childStdin, msg); err != nil {
+		log.Println("[controller] overlay style push:", err)
+	}
+}
+
+// queueStyle builds a StyleMsg from the current settings and hands it to runLoop
+// via styleCh (non-blocking). 설정 변경/초기화 시 호출 — 실제 stdin write는 runLoop이 한다.
+func (c *Controller) queueStyle() {
+	c.mu.Lock()
+	msg := styleMsgFromSettings(c.settings)
+	c.mu.Unlock()
+	select {
+	case c.styleCh <- msg:
+	default: // 채널이 가득 차면(오버레이 미준비 등) 최신값이 곧 다시 전송되므로 드롭 허용.
+	}
+}
+
+// styleMsgFromSettings maps persisted subtitle-style + position settings into an
+// IPC StyleMsg (원본 SubtitleStyle/Overlay 속성 그대로).
+func styleMsgFromSettings(s config.Settings) ipc.StyleMsg {
+	return ipc.StyleMsg{
+		FontFamily:    s.Subtitle.FontFamily,
+		FontSize:      s.Subtitle.FontSize,
+		FontWeight:    s.Subtitle.FontWeight,
+		TextColor:     s.Subtitle.TextColor,
+		StrokeEnabled: s.Subtitle.StrokeEnabled,
+		StrokeColor:   s.Subtitle.StrokeColor,
+		StrokeWidth:   s.Subtitle.StrokeWidth,
+		GlowEnabled:   s.Subtitle.GlowEnabled,
+		GlowColor:     s.Subtitle.GlowColor,
+		GlowRadius:    s.Subtitle.GlowRadius,
+		BgEnabled:     s.Subtitle.BgEnabled,
+		BgColor:       s.Subtitle.BgColor,
+		BgOpacity:     s.Subtitle.BgOpacity,
+		Align:         s.Subtitle.Align,
+		MaxLines:      s.Subtitle.MaxLines,
+		MonitorIndex:  s.Position.MonitorIndex,
+		Vertical:      s.Position.Vertical,
 	}
 }
 
@@ -486,6 +555,8 @@ func (c *Controller) SaveSettings(s config.Settings) error {
 		c.r.SetProviderConfig(cfg)
 		c.r.SetSelection(sel)
 	}
+	// 자막 스타일/위치(모니터·수직·폰트·색 등) 변경을 오버레이에 즉시 반영한다.
+	c.queueStyle()
 	return nil
 }
 

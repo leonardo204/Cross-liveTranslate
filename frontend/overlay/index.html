@@ -24,21 +24,35 @@
       font-family: -apple-system, "Helvetica Neue", "Segoe UI", system-ui, sans-serif;
     }
 
-    /* Bottom-centre subtitle stack, like a film caption. */
-    #subtitle {
+    /* Full-frame stage: covers the whole (monitor-sized) overlay window so the
+       caption box can be placed top / middle / bottom relative to the monitor.
+       Vertical placement = justify-content; horizontal align = align-items. */
+    #stage {
       position: fixed;
-      left: 0;
-      right: 0;
-      bottom: 8vh;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      /* default bottom + centre; overridden by style:update. */
+      justify-content: flex-end;
+      align-items: center;
+      /* Keep captions off the very edges (원본 60/8pt 여백에 대응). */
+      padding: 8px 60px;
+      box-sizing: border-box;
+      pointer-events: none;
+    }
+
+    /* The caption box — background/padding/radius wrap only the text lines. */
+    #subtitle {
       display: flex;
       flex-direction: column;
       align-items: center;
-      justify-content: flex-end;
       gap: 0.15em;
-      pointer-events: none;
-      text-align: center;
-      padding: 0 4vw;
+      max-width: 92vw;
+      padding: 12px 20px;
+      border-radius: 12px;
       box-sizing: border-box;
+      text-align: center;
+      pointer-events: none;
       transition: opacity 120ms ease;
     }
 
@@ -46,13 +60,14 @@
 
     .line {
       display: inline-block;
-      max-width: 92vw;
+      max-width: 100%;
       color: #ffffff;
       font-weight: 700;
-      font-size: clamp(28px, 4.2vw, 64px);
+      font-size: 34px;
       line-height: 1.25;
-      /* Black outline for legibility over any background: webkit stroke
-         plus layered text-shadow (works when stroke is unsupported). */
+      /* Black outline for legibility over any background: webkit stroke plus a
+         layered text-shadow (works when stroke is unsupported). style:update
+         replaces these with the user's stroke/glow values. */
       -webkit-text-stroke: 2px #000;
       text-shadow:
         0 0 4px rgba(0, 0, 0, 0.9),
@@ -64,50 +79,196 @@
 
     /* Secondary (source) line rendered slightly smaller/dimmer if present. */
     .line.source {
-      font-size: clamp(20px, 3vw, 44px);
-      font-weight: 600;
-      color: #e8e8e8;
-      opacity: 0.92;
+      opacity: 0.85;
     }
   </style>
 </head>
 <body>
-  <div id="subtitle" class="hidden"></div>
+  <div id="stage">
+    <div id="subtitle" class="hidden"></div>
+  </div>
 
   <script>
-    // Renders subtitle lines pushed from Go via the Wails event bus.
-    // Event: "subtitle:update", payload { lines: string[], visible: bool,
-    //         source?: string }.
+    // Overlay renderer. Two Wails events drive it:
+    //   "subtitle:update" { lines: string[], visible: bool, source?: string }
+    //   "style:update"    { fontFamily, fontSize, fontWeight, textColor,
+    //                        strokeEnabled, strokeColor, strokeWidth,
+    //                        glowEnabled, glowColor, glowRadius,
+    //                        bgEnabled, bgColor, bgOpacity, align, maxLines,
+    //                        monitorIndex, vertical }
+    // The last subtitle payload + last style are retained so either event can
+    // re-render with the current combination (원본: 미리보기=실제, 실시간 반영).
     (function () {
+      const stage = document.getElementById("stage");
       const box = document.getElementById("subtitle");
 
-      function render(payload) {
-        const lines = (payload && Array.isArray(payload.lines)) ? payload.lines : [];
-        const visible = !payload || payload.visible !== false;
-        const source = payload && typeof payload.source === "string" ? payload.source : "";
+      // Deterministic first-run defaults mirror config.DefaultSettings (A1).
+      let style = {
+        fontFamily: "",
+        fontSize: 34,
+        fontWeight: "bold",
+        textColor: "#FFFFFFFF",
+        strokeEnabled: true,
+        strokeColor: "#000000E6",
+        strokeWidth: 2,
+        glowEnabled: false,
+        glowColor: "#00E5FFCC",
+        glowRadius: 8,
+        bgEnabled: true,
+        bgColor: "#000000FF",
+        bgOpacity: 0.35,
+        align: "center",
+        maxLines: 2,
+        monitorIndex: 0,
+        vertical: "bottom",
+      };
+      let lastSubtitle = { lines: [], visible: false, source: "" };
+
+      // Weight name → CSS numeric (원본 SubtitleFontWeight 매핑).
+      const WEIGHTS = {
+        regular: 400, medium: 500, semibold: 600,
+        bold: 700, heavy: 800, black: 900,
+      };
+      const SYSTEM_FONT =
+        '-apple-system, "Helvetica Neue", "Segoe UI", system-ui, sans-serif';
+
+      // Parse "#RRGGBBAA" (or "#RRGGBB") → {r,g,b,a}. Falls back to opaque white.
+      function parseHex(hex) {
+        if (typeof hex !== "string") return { r: 255, g: 255, b: 255, a: 1 };
+        let s = hex.trim().replace(/^#/, "").toUpperCase();
+        if (s.length === 6) s += "FF";
+        if (s.length !== 8 || /[^0-9A-F]/.test(s)) {
+          return { r: 255, g: 255, b: 255, a: 1 };
+        }
+        return {
+          r: parseInt(s.slice(0, 2), 16),
+          g: parseInt(s.slice(2, 4), 16),
+          b: parseInt(s.slice(4, 6), 16),
+          a: parseInt(s.slice(6, 8), 16) / 255,
+        };
+      }
+
+      // "#RRGGBBAA" → "rgba(r,g,b,a)". alphaMul scales the parsed alpha;
+      // alphaOverride (when a number) replaces it outright (배경 BgOpacity 용).
+      function rgba(hex, alphaMul, alphaOverride) {
+        const c = parseHex(hex);
+        let a = c.a * (typeof alphaMul === "number" ? alphaMul : 1);
+        if (typeof alphaOverride === "number") a = alphaOverride;
+        a = Math.max(0, Math.min(1, a));
+        return "rgba(" + c.r + "," + c.g + "," + c.b + "," + a + ")";
+      }
+
+      // Build the text-shadow list: stroke (multi-shadow radius 1/3/6, 원본
+      // StrokeShadowModifier의 0.9/0.8/0.6 opacity) then glow (radius, radius*1.6).
+      // Order matters — stroke listed first paints on top of the wider glow.
+      function textShadow() {
+        const parts = [];
+        if (style.strokeEnabled) {
+          parts.push("0 0 1px " + rgba(style.strokeColor, 0.9));
+          parts.push("0 1px 3px " + rgba(style.strokeColor, 0.8));
+          parts.push("0 2px 6px " + rgba(style.strokeColor, 0.6));
+        }
+        if (style.glowEnabled && style.glowRadius > 0) {
+          const r = style.glowRadius;
+          parts.push("0 0 " + r + "px " + rgba(style.glowColor));
+          parts.push("0 0 " + (r * 1.6) + "px " + rgba(style.glowColor));
+        }
+        return parts.join(", ");
+      }
+
+      // Apply container-level style (vertical/horizontal placement + background).
+      function applyContainerStyle() {
+        // Vertical placement relative to the monitor frame.
+        const v = style.vertical;
+        stage.style.justifyContent =
+          v === "top" ? "flex-start" : v === "middle" ? "center" : "flex-end";
+
+        // Horizontal alignment (원본 leading/center/trailing).
+        const a = style.align;
+        const flexAlign =
+          a === "leading" ? "flex-start" : a === "trailing" ? "flex-end" : "center";
+        stage.style.alignItems = flexAlign;
+        box.style.alignItems = flexAlign;
+        box.style.textAlign =
+          a === "leading" ? "left" : a === "trailing" ? "right" : "center";
+
+        // Background box (원본은 검정 + backgroundOpacity — BgColor RGB + BgOpacity 알파).
+        box.style.background = style.bgEnabled
+          ? rgba(style.bgColor, 1, style.bgOpacity)
+          : "transparent";
+      }
+
+      // Apply per-line text style to one element (main or source line).
+      function applyLineStyle(el, isSource) {
+        el.style.fontFamily = style.fontFamily
+          ? '"' + style.fontFamily + '", ' + SYSTEM_FONT
+          : SYSTEM_FONT;
+        const size = isSource ? style.fontSize * 0.65 : style.fontSize;
+        el.style.fontSize = size + "px";
+        el.style.fontWeight = WEIGHTS[style.fontWeight] || 700;
+        el.style.color = rgba(style.textColor);
+        el.style.webkitTextStroke = style.strokeEnabled
+          ? Math.max(0, style.strokeWidth) + "px " + rgba(style.strokeColor)
+          : "0";
+        el.style.textShadow = textShadow();
+      }
+
+      // Re-render the caption from the retained subtitle payload + current style.
+      function render() {
+        const p = lastSubtitle;
+        const allLines = Array.isArray(p.lines) ? p.lines : [];
+        // maxLines: keep the last N (원본 roll-up: 오래된 위쪽 줄을 버리고 최근 N줄).
+        const maxLines = Math.max(1, style.maxLines | 0);
+        const lines = allLines.slice(-maxLines);
+        const visible = p.visible !== false;
+        const source = typeof p.source === "string" ? p.source : "";
 
         box.textContent = "";
         for (const text of lines) {
           const el = document.createElement("div");
           el.className = "line";
           el.textContent = text;
+          applyLineStyle(el, false);
           box.appendChild(el);
         }
         if (source) {
           const el = document.createElement("div");
           el.className = "line source";
           el.textContent = source;
+          applyLineStyle(el, true);
           box.appendChild(el);
         }
 
-        box.classList.toggle("hidden", !visible || (lines.length === 0 && !source));
+        box.classList.toggle(
+          "hidden",
+          !visible || (lines.length === 0 && !source)
+        );
+      }
+
+      function onSubtitle(payload) {
+        lastSubtitle = {
+          lines: payload && Array.isArray(payload.lines) ? payload.lines : [],
+          visible: !payload || payload.visible !== false,
+          source: payload && typeof payload.source === "string" ? payload.source : "",
+        };
+        render();
+      }
+
+      function onStyle(payload) {
+        if (payload && typeof payload === "object") {
+          style = Object.assign({}, style, payload);
+        }
+        applyContainerStyle();
+        render();
       }
 
       function wire() {
         if (window.runtime && typeof window.runtime.EventsOn === "function") {
-          window.runtime.EventsOn("subtitle:update", render);
+          window.runtime.EventsOn("subtitle:update", onSubtitle);
+          window.runtime.EventsOn("style:update", onStyle);
+          applyContainerStyle();
           // Initial hint so we know the pipe is live even before first event.
-          render({ lines: [], visible: false });
+          render();
         } else {
           // Runtime not injected yet — retry shortly.
           setTimeout(wire, 50);

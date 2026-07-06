@@ -159,11 +159,27 @@ func runOverlay() {
 			}
 			wruntime.WindowShow(ctx)
 
-			// IPC receiver: read subtitle snapshots from the controller (our
-			// parent) over stdin and forward each to the frontend. Replaces the
-			// P3a PoC timer with the real reconciler-fed subtitle stream.
-			go ipc.ReadLoop(os.Stdin, func(m ipc.SubtitleMsg) {
-				wruntime.EventsEmit(ctx, "subtitle:update", m)
+			// IPC receiver: read the controller's (our parent) NDJSON stream over
+			// stdin and route each message to the frontend. Two message kinds
+			// share the stream: subtitle snapshots (text) and style updates
+			// (font/color/outline/glow/background/align/lines/monitor/vertical).
+			// A single goroutine consumes the stream, so lastMonitor needs no lock.
+			lastMonitor := 0 // seeded from the initial Apply(index 0) above.
+			go ipc.Dispatch(os.Stdin, ipc.Handler{
+				OnSubtitle: func(m ipc.SubtitleMsg) {
+					wruntime.EventsEmit(ctx, "subtitle:update", m)
+				},
+				OnStyle: func(m ipc.StyleMsg) {
+					wruntime.EventsEmit(ctx, "style:update", m)
+					// Re-cover the target monitor when the chosen index changes.
+					// overlay.Apply hops to the main thread internally (safe here).
+					if m.MonitorIndex != lastMonitor {
+						lastMonitor = m.MonitorIndex
+						if err := overlay.Apply(overlay.WindowTitle, m.MonitorIndex); err != nil {
+							log.Println("overlay.Apply(monitor):", err)
+						}
+					}
+				},
 			})
 		},
 		Bind: []interface{}{

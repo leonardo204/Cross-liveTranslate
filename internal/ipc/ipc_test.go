@@ -97,6 +97,83 @@ func TestReadLoopThroughPipe(t *testing.T) {
 	}
 }
 
+// TestStyleRoundTrip verifies a StyleMsg written with WriteStyle is recovered
+// identically by Dispatch (모든 스타일/위치 필드 왕복 무손실).
+func TestStyleRoundTrip(t *testing.T) {
+	want := StyleMsg{
+		FontFamily:    "Pretendard",
+		FontSize:      34,
+		FontWeight:    "bold",
+		TextColor:     "#FFFFFFFF",
+		StrokeEnabled: true,
+		StrokeColor:   "#000000E6",
+		StrokeWidth:   2,
+		GlowEnabled:   true,
+		GlowColor:     "#00E5FFCC",
+		GlowRadius:    8,
+		BgEnabled:     true,
+		BgColor:       "#000000FF",
+		BgOpacity:     0.35,
+		Align:         "center",
+		MaxLines:      2,
+		MonitorIndex:  1,
+		Vertical:      "bottom",
+	}
+
+	var buf bytes.Buffer
+	if err := WriteStyle(&buf, want); err != nil {
+		t.Fatalf("WriteStyle: %v", err)
+	}
+
+	var got []StyleMsg
+	Dispatch(&buf, Handler{OnStyle: func(m StyleMsg) { got = append(got, m) }})
+	if len(got) != 1 {
+		t.Fatalf("got %d style messages, want 1", len(got))
+	}
+	if !reflect.DeepEqual(got[0], want) {
+		t.Errorf("style = %#v, want %#v", got[0], want)
+	}
+}
+
+// TestDispatchRoutesByType ensures a mixed stream of subtitle + style lines is
+// routed to the correct callbacks, and that untyped subtitle lines (하위호환)
+// still reach OnSubtitle.
+func TestDispatchRoutesByType(t *testing.T) {
+	var buf bytes.Buffer
+	// Untyped subtitle (legacy WriteMsg) → must still route to OnSubtitle.
+	if err := WriteMsg(&buf, SubtitleMsg{Lines: []string{"legacy"}, Visible: true}); err != nil {
+		t.Fatalf("WriteMsg: %v", err)
+	}
+	// Typed subtitle.
+	if err := WriteSubtitle(&buf, SubtitleMsg{Lines: []string{"typed"}, Visible: true}); err != nil {
+		t.Fatalf("WriteSubtitle: %v", err)
+	}
+	// Typed style.
+	if err := WriteStyle(&buf, StyleMsg{FontSize: 40, Align: "leading", MonitorIndex: 2}); err != nil {
+		t.Fatalf("WriteStyle: %v", err)
+	}
+
+	var subs []SubtitleMsg
+	var styles []StyleMsg
+	Dispatch(&buf, Handler{
+		OnSubtitle: func(m SubtitleMsg) { subs = append(subs, m) },
+		OnStyle:    func(m StyleMsg) { styles = append(styles, m) },
+	})
+
+	if len(subs) != 2 {
+		t.Fatalf("got %d subtitle messages, want 2 (%#v)", len(subs), subs)
+	}
+	if subs[0].Lines[0] != "legacy" || subs[1].Lines[0] != "typed" {
+		t.Errorf("subtitle routing wrong: %#v", subs)
+	}
+	if len(styles) != 1 {
+		t.Fatalf("got %d style messages, want 1", len(styles))
+	}
+	if styles[0].FontSize != 40 || styles[0].Align != "leading" || styles[0].MonitorIndex != 2 {
+		t.Errorf("style routing wrong: %#v", styles[0])
+	}
+}
+
 // TestLongLine verifies a subtitle line beyond the default 64KiB scanner token
 // limit still round-trips (버퍼 확장 검증).
 func TestLongLine(t *testing.T) {

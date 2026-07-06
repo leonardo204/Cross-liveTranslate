@@ -1,0 +1,20 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "cross-livetranslate",
+  "outputfilename": "cross-livetranslate",
+  "frontend:install": "",
+  "frontend:build": "",
+  "frontend:dev:watcher": "",
+  "frontend:dev:serverUrl": "auto",
+  "author": {
+    "name": "Altimedia",
+    "email": ""
+  },
+  "info": {
+    "productName": "Cross-liveTranslate",
+    "productVersion": "0.1.0-dev",
+    "companyName": "Altimedia",
+    "copyright": "",
+    "comments": "Cross-platform live translation (Gemini Live)"
+  }
+}

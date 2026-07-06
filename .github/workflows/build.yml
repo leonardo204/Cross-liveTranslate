@@ -1,0 +1,32 @@
+name: build
+
+# 빌드 검증 — mac 네이티브 + Windows 크로스컴파일(순수 Go, cgo 미사용 단계 기준).
+# 릴리스/서명/배포는 scripts/release.sh + add-windows-asset.sh 참조(마스터 플랜 §4~5).
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  verify:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22'
+          cache: true
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: build (native / darwin)
+        run: go build ./...
+
+      - name: build (windows cross-compile)
+        run: GOOS=windows GOARCH=amd64 go build ./...
+
+      - name: test
+        run: go test ./...

@@ -1,0 +1,47 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Cross-liveTranslate</title>
+  <style>
+    :root { color-scheme: light dark; }
+    html, body {
+      margin: 0; height: 100%;
+      font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
+      background: #ececec; color: #222;
+    }
+    .wrap {
+      height: 100%; display: flex; flex-direction: column;
+      align-items: center; justify-content: center; gap: 0.75rem;
+    }
+    h1 { margin: 0; font-size: 1.6rem; font-weight: 600; }
+    p  { margin: 0; opacity: 0.7; font-size: 0.95rem; }
+    code { background: rgba(0,0,0,0.06); padding: 0.1em 0.4em; border-radius: 4px; }
+    #version { font-variant-numeric: tabular-nums; }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Cross-liveTranslate</h1>
+    <p>P0 scaffold — empty Wails window boots.</p>
+    <p>version: <code id="version">…</code></p>
+  </div>
+
+  <script>
+    // Wails runtime is injected by the framework at runtime. When the bound
+    // App.CurrentVersion method is available, show the running version.
+    window.addEventListener("DOMContentLoaded", () => {
+      const el = document.getElementById("version");
+      const bind = window.go && window.go.main && window.go.main.App;
+      if (bind && typeof bind.CurrentVersion === "function") {
+        bind.CurrentVersion().then((v) => { el.textContent = v; }).catch(() => {
+          el.textContent = "unavailable";
+        });
+      } else {
+        el.textContent = "0.1.0-dev";
+      }
+    });
+  </script>
+</body>
+</html>

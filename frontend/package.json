@@ -1,0 +1,10 @@
+{
+  "name": "cross-livetranslate-frontend",
+  "version": "0.0.1",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "echo no-op: static index.html is embedded as-is",
+    "dev": "echo no-op"
+  }
+}

@@ -19,6 +19,7 @@ import (
 	"errors"
 	"io"
 	"log"
+	"math"
 	"os"
 	"os/exec"
 	"strings"
@@ -72,6 +73,11 @@ type Controller struct {
 	// settings is the full persisted user-settings model (Wave 1). 락(mu) 보호.
 	// 변경 바인딩 메서드가 이 값을 갱신하고 즉시 settings.json에 저장한다.
 	settings config.Settings
+
+	// 번역 음성 재생(A3). player/ducker는 start()에서 1회 생성되어 수명 내내 안정 포인터다
+	// (Enqueue/Flush는 runLoop, Start/Stop/게인·덕킹 정책은 바인딩 goroutine이 호출).
+	player *audio.Player
+	ducker audio.Ducker
 
 	// overlay 자식 프로세스.
 	child      *exec.Cmd
@@ -133,6 +139,10 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	}
 	c.mu.Unlock()
 
+	// 번역 음성 재생(A3): player/ducker를 1회 생성한다(디바이스는 Start 시점에 연다).
+	c.player = audio.NewPlayer()
+	c.ducker = audio.NewDucker()
+
 	// 팩토리 주입: reconciler는 gemini/malgo에 직접 의존하지 않는다(headless와 동일).
 	newProvider := func(cfg app.ProviderConfig) (pipeline.Provider, error) {
 		return gemini.NewProvider(gemini.Config{
@@ -141,6 +151,8 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 			TargetLanguage:            cfg.TargetLanguage,
 			SourceLanguage:            cfg.SourceLanguage,
 			RequestInputTranscription: cfg.ShowSource,
+			// 재생이 켜질 때만 서버가 24kHz PCM을 생성/전송한다(EmitOutputAudio).
+			EmitOutputAudio: cfg.EmitOutputAudio,
 		}), nil
 	}
 	newSource := func(s audio.Selection) (audio.Source, error) {
@@ -236,6 +248,20 @@ func (c *Controller) runLoop() {
 	defer ticker.Stop()
 
 	var lastSig string
+	// 재생 진단(A3): 약 5초마다 player Stats를 로깅해 OutputAudio가 실제로 링버퍼로
+	// 흐르는지(EnqueuedBytes 증가), 백프레셔/ dedup 드롭이 있는지 검증 가능하게 한다.
+	var statsTick int
+	logPlayerStats := func() {
+		if c.player == nil {
+			return
+		}
+		st := c.player.Stats()
+		if st.EnqueuedBytes == 0 && st.DroppedChunks == 0 && st.DupSkipped == 0 {
+			return // 재생 미사용 — 조용히.
+		}
+		log.Printf("[controller] player stats: enqueued=%dB dropped=%d dupSkip=%d buffered=%dms",
+			st.EnqueuedBytes, st.DroppedChunks, st.DupSkipped, st.BufferedMS)
+	}
 	maybePush := func() {
 		msg := buildSubtitleMsg(eng, c.wantSource())
 		sig := subtitleSignature(msg)
@@ -253,6 +279,10 @@ func (c *Controller) runLoop() {
 		case now := <-ticker.C:
 			eng.Heartbeat(now)
 			maybePush()
+			statsTick++
+			if statsTick%20 == 0 { // 250ms × 20 ≈ 5s
+				logPlayerStats()
+			}
 		case ev := <-c.events:
 			c.applyEvent(eng, ev)
 			maybePush()
@@ -323,16 +353,97 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 		eng.GenerationComplete()
 	case pipeline.Interrupted:
 		eng.Interrupted()
+		// 진행 중 번역 오디오도 즉시 폐기(서버 interrupted — 재생은 계속 가능 상태 유지).
+		if c.player != nil {
+			c.player.Flush()
+		}
+	case pipeline.OutputAudio:
+		// 번역 음성 재생(A3): PlaybackEnabled일 때만 서버가 PCM을 보내므로(EmitOutputAudio),
+		// 여기서는 링버퍼로 흘려보낸다. 재생 정지 상태면 player.Enqueue가 내부에서 드롭한다.
+		if c.player != nil {
+			c.player.Enqueue(ev.AudioPCM)
+		}
 	case pipeline.State:
 		c.setStatus("state: " + ev.State.String())
 	case pipeline.PermanentFailure:
 		c.setStatus("failed")
 		c.mu.Lock()
 		c.running = false
+		audioCfg := c.settings.Audio
 		c.mu.Unlock()
-	case pipeline.Usage, pipeline.OutputAudio:
-		// P3b는 비용/음성 소비 없음 — 무시.
+		// 세션 종료 — 재생 정지 + 원음 볼륨 복원.
+		c.applyAudioPolicy(audioCfg, false)
+	case pipeline.Usage:
+		// P3b는 비용 소비 없음 — 무시.
 	}
+}
+
+// providerConfigLocked builds the current provider config from controller state.
+// 호출자는 c.mu를 보유해야 한다. EmitOutputAudio는 번역 음성 재생 여부를 반영한다(A3).
+func (c *Controller) providerConfigLocked() app.ProviderConfig {
+	return app.ProviderConfig{
+		Model:           c.model,
+		TargetLanguage:  c.target,
+		SourceLanguage:  c.source,
+		ShowSource:      c.showSource,
+		EmitOutputAudio: c.settings.Audio.PlaybackEnabled,
+	}
+}
+
+// applyAudioPolicy applies the translated-audio playback + ducking policy (A3).
+// 원본 이식: liveTranslate AppState.applyAudioOutputPolicy.
+//
+//   - playing = PlaybackEnabled && running(번역 실행 중).
+//   - playing false → player.Stop() + ducker.Restore().
+//   - playing true → 출력장치 반영 후 player.Start(멱등):
+//       · DuckEnabled + 덕킹 지원 → ducker.Duck(DuckVolume).
+//       · 기본 출력 공유(OutputDeviceID=="")면 게인보상 = min(1/DuckVolume,4.0) × SoftVolume
+//         (원음과 함께 작아진 번역 음량을 되살림, tanh 리미터는 player.Enqueue에서 적용).
+//       · 별도 출력장치면 게인 = SoftVolume(번역이 덕킹 영향 없음, 덕킹은 정책대로 원음에만).
+//       · DuckEnabled off / 미지원 장치 → ducker.Restore(), 게인 = SoftVolume.
+//
+// player/ducker는 start()에서 생성되어 nil이 아니지만 방어적으로 검사한다. 여러 goroutine
+// (Start/Stop/SaveSettings/PermanentFailure)에서 호출될 수 있으나 각 메서드는 짧고 멱등하며,
+// player/ducker 내부가 자체 동기화한다.
+func (c *Controller) applyAudioPolicy(a config.AudioSettings, running bool) {
+	if c.player == nil || c.ducker == nil {
+		return
+	}
+	if !(a.PlaybackEnabled && running) {
+		_ = c.player.Stop()
+		c.ducker.Restore()
+		return
+	}
+
+	// 출력 장치 반영 후 재생 시작(멱등).
+	c.player.SetOutputDevice(a.OutputDeviceID)
+	if err := c.player.Start(); err != nil {
+		log.Println("[controller] player start:", err)
+	}
+
+	sharesDefaultOutput := a.OutputDeviceID == "" // 미지정이면 시스템 기본 출력(=덕킹 대상)을 공유.
+	gain := a.SoftVolume
+
+	switch {
+	case a.DuckEnabled && c.ducker.IsSupported():
+		c.ducker.Duck(a.DuckVolume)
+		if sharesDefaultOutput {
+			comp := 4.0
+			if a.DuckVolume > 0 {
+				comp = math.Min(1.0/a.DuckVolume, 4.0)
+			}
+			gain = comp * a.SoftVolume
+		}
+	case a.DuckEnabled: // 지원되지 않는 출력 장치 → 덕킹 자동 비활성.
+		log.Println("[controller] 원음 덕킹 미지원 출력 장치 — 덕킹 비활성(재생/게인은 정상)")
+		c.ducker.Restore()
+	default: // 덕킹 off.
+		c.ducker.Restore()
+	}
+
+	c.player.SetGain(gain)
+	log.Printf("[controller] audio policy: playing device=%q duck=%v gain=%.2f",
+		a.OutputDeviceID, a.DuckEnabled, gain)
 }
 
 // wantSource reports whether the source (원문) line should be shown in the overlay.
@@ -345,6 +456,13 @@ func (c *Controller) wantSource() bool {
 // shutdown kills the overlay child and tears down the reconciler. Idempotent.
 func (c *Controller) shutdown() {
 	c.closeOnce.Do(func() {
+		// 번역 음성 재생 정지 + 원음 볼륨 복원(A3) — 프로세스 종료 시 시스템 볼륨을 남기지 않는다.
+		if c.player != nil {
+			_ = c.player.Stop()
+		}
+		if c.ducker != nil {
+			c.ducker.Restore()
+		}
 		if c.child != nil && c.child.Process != nil {
 			_ = c.child.Process.Kill()
 		}
@@ -399,16 +517,14 @@ func (c *Controller) Start() error {
 	d := app.Desired{
 		Running:   true,
 		Selection: c.sel,
-		Provider: app.ProviderConfig{
-			Model:          c.model,
-			TargetLanguage: c.target,
-			SourceLanguage: c.source,
-			ShowSource:     c.showSource,
-		},
+		Provider:  c.providerConfigLocked(),
 	}
+	audioCfg := c.settings.Audio
 	c.mu.Unlock()
 
 	c.r.SetDesired(d)
+	// 재생/덕킹 정책 적용(재생 켜짐 + 실행 중일 때 player.Start + 게인보상 + 덕킹).
+	c.applyAudioPolicy(audioCfg, true)
 	c.emitStatus()
 	return nil
 }
@@ -418,10 +534,13 @@ func (c *Controller) Stop() error {
 	c.mu.Lock()
 	c.running = false
 	c.status = "stopped"
+	audioCfg := c.settings.Audio
 	c.mu.Unlock()
 	if c.r != nil {
 		c.r.SetRunning(false)
 	}
+	// 재생 정지 + 원음 볼륨 복원(running=false).
+	c.applyAudioPolicy(audioCfg, false)
 	c.emitStatus()
 	return nil
 }
@@ -445,12 +564,7 @@ func (c *Controller) SetTarget(lang string) {
 	c.settings.Language.Target = lang
 	snap := c.settings
 	running := c.running
-	cfg := app.ProviderConfig{
-		Model:          c.model,
-		TargetLanguage: c.target,
-		SourceLanguage: c.source,
-		ShowSource:     c.showSource,
-	}
+	cfg := c.providerConfigLocked()
 	c.mu.Unlock()
 	c.saveSettings(snap)
 	if running && c.r != nil {
@@ -486,12 +600,7 @@ func (c *Controller) SetShowSource(on bool) {
 	c.settings.Language.ShowSource = on
 	snap := c.settings
 	running := c.running
-	cfg := app.ProviderConfig{
-		Model:          c.model,
-		TargetLanguage: c.target,
-		SourceLanguage: c.source,
-		ShowSource:     on,
-	}
+	cfg := c.providerConfigLocked()
 	c.mu.Unlock()
 	c.saveSettings(snap)
 	if running && c.r != nil {
@@ -539,13 +648,9 @@ func (c *Controller) SaveSettings(s config.Settings) error {
 	c.showSource = s.Language.ShowSource
 	c.sel = selectionFromSettings(s.Input)
 	running := c.running
-	cfg := app.ProviderConfig{
-		Model:          c.model,
-		TargetLanguage: c.target,
-		SourceLanguage: c.source,
-		ShowSource:     c.showSource,
-	}
+	cfg := c.providerConfigLocked()
 	sel := c.sel
+	audioCfg := c.settings.Audio
 	c.mu.Unlock()
 
 	if err := s.Save(); err != nil {
@@ -555,6 +660,8 @@ func (c *Controller) SaveSettings(s config.Settings) error {
 		c.r.SetProviderConfig(cfg)
 		c.r.SetSelection(sel)
 	}
+	// 재생/덕킹 설정 변경 반영(재생 토글·출력장치·소프트볼륨·덕킹). running과 결합해 적용.
+	c.applyAudioPolicy(audioCfg, running)
 	// 자막 스타일/위치(모니터·수직·폰트·색 등) 변경을 오버레이에 즉시 반영한다.
 	c.queueStyle()
 	return nil

@@ -34,6 +34,10 @@ type ProviderConfig struct {
 	SourceLanguage string
 	ShowSource     bool
 	KeyFingerprint string
+	// EmitOutputAudio requests translated output-audio events(번역 음성 재생). 재생이 켜질
+	// 때만 true → 서버가 24kHz PCM을 생성/전송하고 gemini client가 OutputAudio 이벤트를 방출한다.
+	// 값이 바뀌면 reconciler가 provider를 핫스왑한다(ProviderConfig 비교에 포함).
+	EmitOutputAudio bool
 }
 
 // Desired is the user intent (최신). SetDesired/SetRunning 등으로 갱신한다.

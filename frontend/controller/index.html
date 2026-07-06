@@ -1,47 +1,151 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="ko">
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
   <title>Cross-liveTranslate</title>
   <style>
-    :root { color-scheme: light dark; }
+    :root { color-scheme: dark; }
     html, body {
       margin: 0; height: 100%;
       font-family: -apple-system, "Segoe UI", system-ui, sans-serif;
-      background: #ececec; color: #222;
+      background: #18181c; color: #f0f0f2;
+      -webkit-user-select: none; user-select: none;
     }
     .wrap {
-      height: 100%; display: flex; flex-direction: column;
-      align-items: center; justify-content: center; gap: 0.75rem;
+      height: 100%; box-sizing: border-box;
+      display: flex; flex-direction: column; gap: 0.55rem;
+      padding: 0.7rem 0.85rem;
     }
-    h1 { margin: 0; font-size: 1.6rem; font-weight: 600; }
-    p  { margin: 0; opacity: 0.7; font-size: 0.95rem; }
-    code { background: rgba(0,0,0,0.06); padding: 0.1em 0.4em; border-radius: 4px; }
-    #version { font-variant-numeric: tabular-nums; }
+    /* Frameless drag region: the header lets the user move the window. */
+    header {
+      --wails-draggable: drag;
+      display: flex; align-items: center; justify-content: space-between;
+      font-size: 0.82rem; font-weight: 600; opacity: 0.85;
+      padding-bottom: 0.15rem;
+    }
+    .dot { width: 9px; height: 9px; border-radius: 50%; background: #666; display: inline-block; margin-right: 6px; }
+    .dot.on { background: #38d15b; box-shadow: 0 0 6px #38d15b; }
+    .row { display: flex; align-items: center; gap: 0.4rem; }
+    label { font-size: 0.72rem; opacity: 0.7; min-width: 3.2rem; }
+    input[type="text"], select {
+      flex: 1; background: #26262c; color: #f0f0f2;
+      border: 1px solid #3a3a42; border-radius: 6px;
+      padding: 0.3rem 0.45rem; font-size: 0.82rem;
+      --wails-draggable: no-drag;
+    }
+    .toggle { display: flex; align-items: center; gap: 0.35rem; font-size: 0.75rem; opacity: 0.85; }
+    .buttons { display: flex; gap: 0.5rem; margin-top: 0.15rem; }
+    button {
+      flex: 1; padding: 0.45rem 0; font-size: 0.9rem; font-weight: 600;
+      border: none; border-radius: 7px; cursor: pointer;
+      --wails-draggable: no-drag;
+    }
+    #start { background: #2f8f46; color: #fff; }
+    #start:hover { background: #37a651; }
+    #stop  { background: #333; color: #ddd; }
+    #stop:hover { background: #444; }
+    button:disabled { opacity: 0.4; cursor: default; }
+    .status {
+      margin-top: auto; font-size: 0.72rem; opacity: 0.7;
+      font-variant-numeric: tabular-nums; min-height: 1em;
+    }
   </style>
 </head>
 <body>
   <div class="wrap">
-    <h1>Cross-liveTranslate</h1>
-    <p>P0 scaffold — empty Wails window boots.</p>
-    <p>version: <code id="version">…</code></p>
+    <header>
+      <span><span id="dot" class="dot"></span>LiveTranslate</span>
+      <span id="ver" style="opacity:0.5;font-weight:400"></span>
+    </header>
+
+    <div class="row">
+      <label for="target">대상 언어</label>
+      <input id="target" type="text" value="en" placeholder="en / ko / ja" />
+    </div>
+
+    <div class="row">
+      <label for="input">입력</label>
+      <select id="input">
+        <option value="auto">자동(auto)</option>
+        <option value="mic">마이크(mic)</option>
+        <option value="loopback">시스템 소리(loopback)</option>
+      </select>
+    </div>
+
+    <label class="toggle">
+      <input id="showSource" type="checkbox" style="--wails-draggable:no-drag" />
+      원문 동시 표시
+    </label>
+
+    <div class="buttons">
+      <button id="start">Start</button>
+      <button id="stop" disabled>Stop</button>
+    </div>
+
+    <div id="status" class="status">idle</div>
   </div>
 
   <script>
-    // Wails runtime is injected by the framework at runtime. When the bound
-    // App.CurrentVersion method is available, show the running version.
-    window.addEventListener("DOMContentLoaded", () => {
-      const el = document.getElementById("version");
-      const bind = window.go && window.go.main && window.go.main.App;
-      if (bind && typeof bind.CurrentVersion === "function") {
-        bind.CurrentVersion().then((v) => { el.textContent = v; }).catch(() => {
-          el.textContent = "unavailable";
-        });
-      } else {
-        el.textContent = "0.1.0-dev";
+    (function () {
+      const $ = (id) => document.getElementById(id);
+      const bind = () => (window.go && window.go.main && window.go.main.Controller) || null;
+
+      const dot = $("dot"), statusEl = $("status");
+      const startBtn = $("start"), stopBtn = $("stop");
+      const targetEl = $("target"), inputEl = $("input"), showSrcEl = $("showSource");
+
+      function setRunningUI(running) {
+        dot.classList.toggle("on", !!running);
+        startBtn.disabled = !!running;
+        stopBtn.disabled = !running;
       }
-    });
+
+      async function start() {
+        const c = bind(); if (!c) return;
+        try {
+          await c.SetTarget(targetEl.value.trim() || "en");
+          await c.SetInput(inputEl.value);
+          await c.SetShowSource(showSrcEl.checked);
+          await c.Start();
+          setRunningUI(true);
+        } catch (e) {
+          statusEl.textContent = "error: " + e;
+        }
+      }
+      async function stop() {
+        const c = bind(); if (!c) return;
+        try { await c.Stop(); } finally { setRunningUI(false); }
+      }
+
+      startBtn.addEventListener("click", start);
+      stopBtn.addEventListener("click", stop);
+      targetEl.addEventListener("change", () => { const c = bind(); if (c) c.SetTarget(targetEl.value.trim()); });
+      inputEl.addEventListener("change", () => { const c = bind(); if (c) c.SetInput(inputEl.value); });
+      showSrcEl.addEventListener("change", () => { const c = bind(); if (c) c.SetShowSource(showSrcEl.checked); });
+
+      // Status: react to pushed events + poll as a fallback.
+      function onStatus(s) { if (typeof s === "string") statusEl.textContent = s; }
+      function wire() {
+        if (window.runtime && window.runtime.EventsOn) {
+          window.runtime.EventsOn("status:update", onStatus);
+        }
+        const app = window.go && window.go.main && window.go.main.App;
+        if (app && app.CurrentVersion) app.CurrentVersion().then((v) => { $("ver").textContent = v; }).catch(() => {});
+      }
+      async function poll() {
+        const c = bind();
+        if (c) {
+          try {
+            const [s, running] = await Promise.all([c.Status(), c.IsRunning()]);
+            onStatus(s); setRunningUI(running);
+          } catch (_) {}
+        }
+        setTimeout(poll, 1000);
+      }
+
+      window.addEventListener("DOMContentLoaded", () => { wire(); poll(); });
+    })();
   </script>
 </body>
 </html>

@@ -19,8 +19,8 @@ import (
 	"io/fs"
 	"log"
 	"os"
-	"time"
 
+	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/overlay"
 	"cross-livetranslate/internal/updater"
 
@@ -69,32 +69,56 @@ func subFS(dir string) fs.FS {
 	return sub
 }
 
-// runController boots the main control window. P3a keeps this at parity with
-// the P0 placeholder (empty window + self-update binding); the HUD/settings
-// UI and tray land in P3b.
+// runController boots the control HUD: a small always-on-top window that drives
+// the P2 translation pipeline and supervises the overlay child process (P3b).
+// The bound Controller exposes Start/Stop/SetTarget/SetInput/... to the HUD JS.
 func runController() {
+	flags := parseControllerFlags()
+
 	app := NewApp()
+	ctrl := newController()
+	app.ctrl = ctrl
 
 	err := wails.Run(&options.App{
-		Title:     "Cross-liveTranslate",
-		Width:     1180,
-		Height:    800,
-		MinWidth:  900,
-		MinHeight: 600,
+		Title:       "Cross-liveTranslate",
+		Width:       380,
+		Height:      280,
+		MinWidth:    340,
+		MinHeight:   240,
+		AlwaysOnTop: true,
 		AssetServer: &assetserver.Options{
 			Assets: subFS("controller"),
 		},
-		BackgroundColour: &options.RGBA{R: 236, G: 236, B: 236, A: 1},
+		BackgroundColour: &options.RGBA{R: 24, G: 24, B: 28, A: 1},
 		OnStartup: func(ctx context.Context) {
 			app.startup(ctx)
+			ctrl.start(ctx, flags)
+		},
+		OnShutdown: func(ctx context.Context) {
+			ctrl.shutdown()
 		},
 		Bind: []interface{}{
 			app,
+			ctrl,
 		},
 	})
 	if err != nil {
 		log.Fatalln("wails.Run(controller):", err)
 	}
+}
+
+// parseControllerFlags leniently reads controller-role flags from os.Args.
+// Foreign flags (e.g. -role, updater flags) are ignored so startup never aborts.
+func parseControllerFlags() controllerFlags {
+	var f controllerFlags
+	var role string
+	fset := flag.NewFlagSet("controller", flag.ContinueOnError)
+	fset.BoolVar(&f.autostart, "autostart", false, "start translation immediately on launch")
+	fset.StringVar(&f.target, "target", "", "target language (BCP-47), e.g. en, ko, ja")
+	fset.StringVar(&f.input, "input", "", "input source: auto|mic|loopback|device:<id>")
+	fset.StringVar(&role, "role", "controller", "process role (ignored here)")
+	_ = fset.Parse(os.Args[1:])
+	return f
 }
 
 // runOverlay boots the transparent, always-on-top, click-through subtitle
@@ -135,10 +159,12 @@ func runOverlay() {
 			}
 			wruntime.WindowShow(ctx)
 
-			// PoC subtitle driver — cycles sample captions for eyeball
-			// verification (transparent background + click-through). Replaced
-			// by the IPC-fed reconciler in P3b.
-			go driveSampleSubtitles(ctx)
+			// IPC receiver: read subtitle snapshots from the controller (our
+			// parent) over stdin and forward each to the frontend. Replaces the
+			// P3a PoC timer with the real reconciler-fed subtitle stream.
+			go ipc.ReadLoop(os.Stdin, func(m ipc.SubtitleMsg) {
+				wruntime.EventsEmit(ctx, "subtitle:update", m)
+			})
 		},
 		Bind: []interface{}{
 			app,
@@ -146,40 +172,5 @@ func runOverlay() {
 	})
 	if err != nil {
 		log.Fatalln("wails.Run(overlay):", err)
-	}
-}
-
-// subtitlePayload matches the frontend "subtitle:update" contract.
-type subtitlePayload struct {
-	Lines   []string `json:"lines"`
-	Visible bool     `json:"visible"`
-	Source  string   `json:"source,omitempty"`
-}
-
-// driveSampleSubtitles emits rotating sample captions every 2s until the
-// context is cancelled (window closed).
-func driveSampleSubtitles(ctx context.Context) {
-	samples := []subtitlePayload{
-		{Lines: []string{"안녕하세요 → Hello"}, Visible: true, Source: "안녕하세요"},
-		{Lines: []string{"실시간 번역 오버레이 테스트"}, Visible: true},
-		{Lines: []string{"Live translation overlay", "second line of subtitle"}, Visible: true},
-		{Lines: []string{"클릭이 아래 앱으로 통과되는지 확인하세요"}, Visible: true, Source: "Check click-through"},
-	}
-
-	ticker := time.NewTicker(2 * time.Second)
-	defer ticker.Stop()
-
-	// Emit the first sample immediately.
-	i := 0
-	wruntime.EventsEmit(ctx, "subtitle:update", samples[i])
-
-	for {
-		select {
-		case <-ctx.Done():
-			return
-		case <-ticker.C:
-			i = (i + 1) % len(samples)
-			wruntime.EventsEmit(ctx, "subtitle:update", samples[i])
-		}
 	}
 }

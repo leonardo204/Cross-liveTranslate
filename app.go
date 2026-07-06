@@ -13,6 +13,9 @@ import (
 // App is the Wails-bound struct.
 type App struct {
 	ctx context.Context
+	// ctrl is set only in the controller role (nil in the overlay process);
+	// it owns the pipeline + overlay child and backs the HUD's bound methods.
+	ctrl *Controller
 }
 
 // NewApp creates a new App.

@@ -16,7 +16,7 @@ jobs:
 
       - uses: actions/setup-go@v5
         with:
-          go-version: '1.22'
+          go-version-file: go.mod
           cache: true
 
       - name: go vet
@@ -25,8 +25,15 @@ jobs:
       - name: build (native / darwin)
         run: go build ./...
 
-      - name: build (windows cross-compile)
-        run: GOOS=windows GOARCH=amd64 go build ./...
+      # Windows 크로스컴파일은 순수 Go 패키지만 검증한다. 오디오(malgo)·트레이·오버레이는
+      # cgo(CoreAudio/Cocoa/WASAPI) 전용이라 CGO 없는 크로스빌드에서 컴파일되지 않는다.
+      # Windows 전체 빌드는 대단위 C(배포)에서 windows 러너로 네이티브 빌드한다.
+      - name: build (pure packages, windows cross-compile)
+        run: >
+          GOOS=windows GOARCH=amd64 go build
+          ./internal/config/... ./internal/pipeline/... ./internal/subtitle/...
+          ./internal/gemini/... ./internal/ipc/... ./internal/cost/...
+          ./internal/recording/... ./internal/vad/... ./internal/updater/...
 
       - name: test
         run: go test ./...

@@ -17,3 +17,9 @@ func Init(h Handlers) error {
 
 // SetStatus is a no-op stub on Windows for now.
 func SetStatus(string) {}
+
+// SetRunning is a no-op stub on Windows for now.
+func SetRunning(bool) {}
+
+// SetHUDVisible is a no-op stub on Windows for now.
+func SetHUDVisible(bool) {}

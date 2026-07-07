@@ -1,0 +1,1046 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>liveTranslate 설정</title>
+  <!--
+    U3 설정 창 (760×580). 원본 liveTranslate SettingsView.swift(NavigationSplitView .balanced,
+    사이드바 9 카테고리 + grouped Form)를 픽셀 수준으로 재현한다.
+
+    런타임 바인딩: 이 창은 `-role settings` 별도 프로세스로 뜨며 window.go.main.SettingsAPI 와
+    window.go.main.App 이 바인드된다(main.go runSettings). SettingsAPI 계약:
+      GetSettings / SaveSettings / SaveAPIKey / TestAPIKey / HasAPIKey / KeySourceLabel
+      ListInputDevices / ListOutputDevices / RefreshDevices / Models / PermissionStatus
+      CurrentVersion / CheckUpdate / ResetAll
+    변경은 즉시 SaveSettings 로 settings.json 에 반영되고, controller 에 "changed" 신호가 간다
+    (원본 SwiftUI 바인딩의 즉시 적용을 재현 — 별도 저장 버튼 없음).
+  -->
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #ececee;
+      --sidebar-bg: #e5e5e7;
+      --sidebar-border: rgba(0,0,0,0.09);
+      --card: #ffffff;
+      --divider: rgba(60,60,67,0.13);
+      --text: #1d1d1f;
+      --secondary: rgba(60,60,67,0.62);
+      --control-bg: #ffffff;
+      --control-border: rgba(0,0,0,0.16);
+      --control-shadow: 0 1px 1px rgba(0,0,0,0.04);
+      --seg-track: rgba(120,120,128,0.16);
+      --seg-on: #ffffff;
+      --seg-on-shadow: 0 1px 2px rgba(0,0,0,0.18);
+      --accent: #007aff;
+      --accent-hover: #0a84ff;
+      --green: #34c759;
+      --red: #ff3b30;
+      --orange: #ff9500;
+      --track: rgba(120,120,128,0.28);
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #252527;
+        --sidebar-bg: #1c1c1e;
+        --sidebar-border: rgba(255,255,255,0.08);
+        --card: #2c2c2e;
+        --divider: rgba(84,84,88,0.55);
+        --text: #f5f5f7;
+        --secondary: rgba(235,235,245,0.6);
+        --control-bg: #48484a;
+        --control-border: rgba(255,255,255,0.14);
+        --control-shadow: none;
+        --seg-track: rgba(120,120,128,0.36);
+        --seg-on: #6c6c70;
+        --seg-on-shadow: 0 1px 2px rgba(0,0,0,0.4);
+        --accent: #0a84ff;
+        --accent-hover: #409cff;
+        --green: #30d158;
+        --red: #ff453a;
+        --orange: #ff9f0a;
+        --track: rgba(120,120,128,0.4);
+      }
+    }
+
+    * { box-sizing: border-box; }
+    html, body {
+      margin: 0; height: 100%;
+      font-family: -apple-system, "SF Pro Text", "Segoe UI", system-ui, sans-serif;
+      font-size: 13px;
+      background: var(--bg); color: var(--text);
+      -webkit-user-select: none; user-select: none;
+      -webkit-font-smoothing: antialiased;
+    }
+
+    /* ---- NavigationSplitView 골격 ---- */
+    .split { display: flex; height: 100%; }
+    .sidebar {
+      width: 190px; flex: 0 0 190px;
+      background: var(--sidebar-bg);
+      border-right: 1px solid var(--sidebar-border);
+      padding: 10px 10px; overflow-y: auto;
+    }
+    .sidebar .navitem {
+      display: flex; align-items: center; gap: 8px;
+      padding: 6px 8px; margin-bottom: 2px;
+      border-radius: 6px; cursor: pointer;
+      font-size: 13px; color: var(--text);
+    }
+    .sidebar .navitem svg { width: 16px; height: 16px; flex: 0 0 16px; opacity: 0.85; }
+    .sidebar .navitem:hover { background: rgba(120,120,128,0.14); }
+    .sidebar .navitem.on { background: var(--accent); color: #fff; }
+    .sidebar .navitem.on svg { opacity: 1; }
+
+    .detail { flex: 1; overflow-y: auto; padding: 18px 20px 24px; }
+
+    /* ---- grouped Form ---- */
+    .section { margin-bottom: 18px; }
+    .section > .sectitle {
+      font-size: 12.5px; color: var(--secondary);
+      margin: 0 0 6px 14px; font-weight: 400;
+    }
+    .group {
+      background: var(--card);
+      border-radius: 8px;
+      overflow: hidden;
+      box-shadow: 0 0 0 0.5px rgba(0,0,0,0.04);
+    }
+    .row {
+      position: relative;
+      display: flex; align-items: center; gap: 12px;
+      min-height: 38px; padding: 7px 14px;
+    }
+    .row.col { flex-direction: column; align-items: stretch; gap: 6px; }
+    .row:not(:first-child)::before {
+      content: ""; position: absolute; top: 0; left: 14px; right: 0;
+      height: 1px; background: var(--divider);
+    }
+    .row > .lbl { flex: 0 0 auto; white-space: nowrap; }
+    .row > .grow { flex: 1 1 auto; min-width: 0; }
+    .row > .val { margin-left: auto; color: var(--secondary); text-align: right; }
+    .row .spacer { flex: 1; }
+    .cap { font-size: 11.5px; color: var(--secondary); line-height: 1.35; }
+    .cap.orange { color: var(--orange); }
+
+    .line { display: flex; align-items: center; }
+    .line .lbl { flex: 1; }
+    .line .val { color: var(--secondary); }
+
+    /* ---- pop-up button (Picker .menu) ---- */
+    select {
+      -webkit-appearance: none; appearance: none;
+      min-width: 0; max-width: 260px;
+      padding: 4px 26px 4px 9px;
+      font-size: 13px; font-family: inherit;
+      color: var(--text);
+      background: var(--control-bg);
+      border: 1px solid var(--control-border);
+      border-radius: 6px; box-shadow: var(--control-shadow);
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='14' viewBox='0 0 10 14'%3E%3Cpath fill='%23888' d='M5 1 8 4H2z M5 13 8 10H2z'/%3E%3C/svg%3E");
+      background-repeat: no-repeat; background-position: right 8px center;
+    }
+    .row > select { margin-left: auto; }
+
+    /* ---- text / secure field ---- */
+    input[type=text], input[type=password] {
+      flex: 1; min-width: 0;
+      padding: 5px 8px; font-size: 13px; font-family: inherit;
+      color: var(--text);
+      background: var(--control-bg);
+      border: 1px solid var(--control-border);
+      border-radius: 6px; box-shadow: var(--control-shadow);
+    }
+
+    /* ---- segmented control (Picker .segmented) ---- */
+    .seg {
+      display: inline-flex; margin-left: auto;
+      background: var(--seg-track); border-radius: 8px; padding: 2px;
+    }
+    .seg button {
+      appearance: none; border: none; background: transparent;
+      color: var(--text); font-size: 12.5px; font-family: inherit;
+      padding: 3px 12px; border-radius: 6px; cursor: pointer;
+      min-width: 44px;
+    }
+    .seg button.on { background: var(--seg-on); box-shadow: var(--seg-on-shadow); }
+    .seg.full { display: flex; margin-left: 0; }
+    .seg.full button { flex: 1; }
+    .seg button:disabled { opacity: 0.4; cursor: default; }
+
+    /* ---- switch (Toggle) ---- */
+    .sw { position: relative; display: inline-block; width: 38px; height: 22px; margin-left: auto; flex: 0 0 auto; }
+    .sw input { opacity: 0; width: 0; height: 0; }
+    .sw .track {
+      position: absolute; inset: 0; cursor: pointer;
+      background: var(--track); border-radius: 22px; transition: background .15s;
+    }
+    .sw .track::before {
+      content: ""; position: absolute; height: 18px; width: 18px; left: 2px; top: 2px;
+      background: #fff; border-radius: 50%; transition: transform .15s;
+      box-shadow: 0 1px 2px rgba(0,0,0,0.3);
+    }
+    .sw input:checked + .track { background: var(--green); }
+    .sw input:checked + .track::before { transform: translateX(16px); }
+    .sw input:disabled + .track { opacity: 0.45; cursor: default; }
+
+    /* ---- slider (Slider) ---- */
+    input[type=range] {
+      -webkit-appearance: none; appearance: none;
+      height: 4px; border-radius: 2px; background: var(--track);
+      outline: none; margin: 8px 0;
+    }
+    input[type=range].grow { flex: 1; }
+    input[type=range]::-webkit-slider-thumb {
+      -webkit-appearance: none; appearance: none;
+      width: 16px; height: 16px; border-radius: 50%;
+      background: #fff; box-shadow: 0 1px 3px rgba(0,0,0,0.35), 0 0 0 0.5px rgba(0,0,0,0.08);
+      cursor: pointer;
+    }
+    .sliderrow { display: flex; align-items: center; gap: 8px; }
+    .sliderrow .edge { font-size: 11.5px; color: var(--secondary); flex: 0 0 auto; }
+
+    /* ---- stepper ---- */
+    .stepper { display: inline-flex; margin-left: auto; border: 1px solid var(--control-border);
+      border-radius: 6px; overflow: hidden; box-shadow: var(--control-shadow); }
+    .stepper button {
+      appearance: none; border: none; background: var(--control-bg);
+      color: var(--text); width: 26px; height: 24px; font-size: 15px; cursor: pointer;
+    }
+    .stepper button:first-child { border-right: 1px solid var(--control-border); }
+
+    /* ---- color ---- */
+    input[type=color] {
+      -webkit-appearance: none; appearance: none;
+      width: 26px; height: 22px; padding: 0; border: 1px solid var(--control-border);
+      border-radius: 5px; background: var(--control-bg); cursor: pointer; flex: 0 0 auto;
+    }
+    input[type=color]::-webkit-color-swatch-wrapper { padding: 2px; }
+    input[type=color]::-webkit-color-swatch { border: none; border-radius: 3px; }
+
+    /* ---- buttons ---- */
+    button.btn {
+      appearance: none; font-family: inherit; font-size: 12.5px;
+      padding: 4px 12px; border-radius: 6px; cursor: pointer;
+      color: var(--text); background: var(--control-bg);
+      border: 1px solid var(--control-border); box-shadow: var(--control-shadow);
+    }
+    button.btn:active { filter: brightness(0.94); }
+    button.btn.prominent { background: var(--accent); color: #fff; border-color: transparent; }
+    button.btn.destructive { color: var(--red); }
+    button.btn:disabled { opacity: 0.42; cursor: default; }
+    button.link {
+      appearance: none; border: none; background: none; font-family: inherit;
+      font-size: 12.5px; color: var(--accent); cursor: pointer; padding: 0;
+    }
+    button.link:disabled { opacity: 0.5; cursor: default; }
+
+    /* ---- status bits ---- */
+    .status { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; }
+    .dot { width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; }
+    .green { color: var(--green); } .red { color: var(--red); } .sec { color: var(--secondary); }
+    .dot.green { background: var(--green); } .dot.red { background: var(--red); }
+    .spin { width: 12px; height: 12px; border: 2px solid var(--secondary); border-top-color: transparent;
+      border-radius: 50%; animation: spin .7s linear infinite; }
+    @keyframes spin { to { transform: rotate(360deg); } }
+
+    /* ---- preview ---- */
+    .preview {
+      height: 120px; border-radius: 10px; overflow: hidden;
+      background: linear-gradient(to bottom, #8c8c8c, #1f1f1f);
+      display: flex; align-items: center; justify-content: center; padding: 0 12px;
+    }
+    .preview .ptext { padding: 0; text-align: center; white-space: nowrap; }
+
+    /* ---- reset modal (confirmationDialog) ---- */
+    .backdrop { position: fixed; inset: 0; background: rgba(0,0,0,0.28);
+      display: none; align-items: center; justify-content: center; z-index: 50; }
+    .backdrop.show { display: flex; }
+    .dialog { width: 360px; background: var(--card); border-radius: 12px; padding: 18px;
+      box-shadow: 0 10px 40px rgba(0,0,0,0.4); text-align: center; }
+    .dialog h3 { margin: 0 0 8px; font-size: 14px; }
+    .dialog p { margin: 0 0 16px; font-size: 12px; color: var(--secondary); line-height: 1.4; }
+    .dialog .actions { display: flex; flex-direction: column; gap: 8px; }
+    .dialog .actions button { width: 100%; padding: 7px; }
+
+    .hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div class="split">
+    <nav class="sidebar" id="sidebar">
+      <div class="navitem" data-cat="model">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="4.5" y="4.5" width="7" height="7" rx="1"/><path d="M6 4.5V2.5M8 4.5V2.5M10 4.5V2.5M6 13.5V11.5M8 13.5V11.5M10 13.5V11.5M4.5 6H2.5M4.5 8H2.5M4.5 10H2.5M13.5 6H11.5M13.5 8H11.5M13.5 10H11.5"/></svg>
+        <span>모델</span>
+      </div>
+      <div class="navitem" data-cat="input">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="6" y="2" width="4" height="7" rx="2"/><path d="M4 8a4 4 0 0 0 8 0"/><path d="M8 12v2M6 14h4"/></svg>
+        <span>입력</span>
+      </div>
+      <div class="navitem" data-cat="subtitle">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><path d="M2.5 4a1.5 1.5 0 0 1 1.5-1.5h8A1.5 1.5 0 0 1 13.5 4v5A1.5 1.5 0 0 1 12 10.5H7l-3 3V10.5H4A1.5 1.5 0 0 1 2.5 9z"/><path d="M4.5 6.5h3M9 6.5h2.5M4.5 8.5h3"/></svg>
+        <span>자막</span>
+      </div>
+      <div class="navitem" data-cat="audio">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><path d="M2.5 6h2l3-2.5v9L4.5 10h-2z"/><path d="M10 5.5a3.5 3.5 0 0 1 0 5"/><path d="M11.8 3.5a6 6 0 0 1 0 9"/></svg>
+        <span>오디오</span>
+      </div>
+      <div class="navitem" data-cat="monitor">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><rect x="2.5" y="3" width="11" height="10" rx="2"/><path d="M2.5 6h11"/><circle cx="4.4" cy="4.5" r="0.4" fill="currentColor"/></svg>
+        <span>제어 HUD</span>
+      </div>
+      <div class="navitem" data-cat="cost">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"><circle cx="8" cy="8" r="6"/><path d="M8 4v8"/><path d="M9.8 5.8a1.9 1.4 0 0 0-3.6.4c0 1.6 3.6.9 3.6 2.6a1.9 1.4 0 0 1-3.6.4"/></svg>
+        <span>비용</span>
+      </div>
+      <div class="navitem" data-cat="permission">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><path d="M8 2.2 3.5 4v3.6c0 3 1.9 4.9 4.5 5.9 2.6-1 4.5-2.9 4.5-5.9V4z"/><rect x="6.3" y="7" width="3.4" height="2.8" rx="0.6"/><path d="M6.9 7V6.3a1.1 1.1 0 0 1 2.2 0V7"/></svg>
+        <span>권한</span>
+      </div>
+      <div class="navitem" data-cat="apiKey">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linecap="round" stroke-linejoin="round"><circle cx="5.5" cy="6" r="3"/><path d="M7.6 8.1 13 13.5M10.5 11l1.6-1.6M12 12.5l1.4-1.4"/></svg>
+        <span>API 키</span>
+      </div>
+      <div class="navitem" data-cat="general">
+        <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"><circle cx="8" cy="8" r="2.2"/><path d="M8 1.5v1.8M8 12.7v1.8M14.5 8h-1.8M3.3 8H1.5M12.6 3.4l-1.3 1.3M4.7 11.3l-1.3 1.3M12.6 12.6l-1.3-1.3M4.7 4.7 3.4 3.4"/></svg>
+        <span>일반</span>
+      </div>
+    </nav>
+
+    <div class="detail" id="detail">
+      <!-- ============ 모델 ============ -->
+      <div class="panel" data-cat="model">
+        <div class="section">
+          <div class="sectitle">모델 선택</div>
+          <div class="group">
+            <div class="row"><span class="lbl">번역 모델</span><select id="selModel"></select></div>
+            <div class="row"><span class="cap">번역 중 모델을 바꾸면 즉시 재연결되어 적용됩니다. 준비 중 모델은 선택해도 동작하지 않습니다.</span></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sectitle">모델 정보</div>
+          <div class="group">
+            <div class="row"><span class="cap" id="modelSummary">Gemini Live 실시간 번역 모델</span></div>
+            <div class="row"><span class="lbl">원문 자막</span><span class="val">지원</span></div>
+            <div class="row"><span class="lbl">번역 자막</span><span class="val">지원</span></div>
+            <div class="row"><span class="lbl">번역 오디오</span><span class="val">지원</span></div>
+            <div class="row"><span class="lbl">실시간 스트리밍</span><span class="val">지원</span></div>
+            <div class="row"><span class="lbl">API 키</span><span class="val">필요</span></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sectitle">음성 감지(VAD)</div>
+          <div class="group">
+            <div class="row"><span class="lbl">VAD 방식</span>
+              <div class="seg" id="segVad">
+                <button data-val="client">클라이언트(Silero)</button>
+                <button data-val="server">서버(Gemini 자동)</button>
+              </div>
+            </div>
+            <div class="row"><span class="cap">클라이언트: 음악/무음을 걸러 비용 절감, 소음에 강함. 서버: 연속 전송으로 Gemini가 발화를 감지(무음도 과금). 초기 반복이 심하면 서버 방식을 시도해 보세요.</span></div>
+            <div class="row"><span class="lbl">모델 상태</span><span class="val" id="vadStatus">클라이언트 게이트 사용</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 입력 ============ -->
+      <div class="panel" data-cat="input">
+        <div class="section">
+          <div class="sectitle">입력</div>
+          <div class="group">
+            <div class="row"><span class="lbl">입력 소스</span><select id="selInput"></select></div>
+            <div class="row">
+              <button class="btn" id="btnRefreshInput">장치 목록 새로고침</button>
+              <span class="spacer"></span>
+              <span class="sec" id="capState">정지됨</span>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 자막 ============ -->
+      <div class="panel" data-cat="subtitle">
+        <div class="section">
+          <div class="sectitle">번역</div>
+          <div class="group">
+            <div class="row"><span class="lbl">번역 언어</span><select id="selLang"></select></div>
+            <div class="row"><span class="cap">번역 중 언어를 바꾸면 즉시 재연결되어 적용됩니다.</span></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="sectitle">자막 위치</div>
+          <div class="group">
+            <div class="row"><span class="lbl">표시 화면</span><select id="selScreen"></select></div>
+            <div class="row"><span class="lbl">세로 위치</span>
+              <div class="seg" id="segVertical">
+                <button data-val="top">위</button>
+                <button data-val="middle">중앙</button>
+                <button data-val="bottom">아래</button>
+              </div>
+            </div>
+            <div class="row col">
+              <div class="line"><span class="lbl">세부 위치</span></div>
+              <div class="sliderrow"><span class="edge">위</span><input type="range" class="grow" id="rngVOffset" min="0" max="1" step="0.01" /><span class="edge">아래</span></div>
+              <span class="cap">선택한 영역(상/중/하) 안에서 자막을 위↔아래로 미세 조정합니다.</span>
+            </div>
+            <div class="row"><span class="lbl">캡처 시작 시 자막 표시</span>
+              <label class="sw"><input type="checkbox" id="tgAutoShowSub" /><span class="track"></span></label></div>
+            <div class="row"><span class="lbl">원문 동시 표시</span>
+              <label class="sw"><input type="checkbox" id="tgShowSource" /><span class="track"></span></label></div>
+            <div class="row"><span class="lbl">테스트 자막 표시</span>
+              <label class="sw"><input type="checkbox" id="tgTestSub" /><span class="track"></span></label></div>
+            <div class="row"><button class="btn" id="btnRefreshScreens">화면 목록 새로고침</button></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="sectitle">자막 스타일</div>
+          <div class="group">
+            <div class="row col">
+              <div class="preview"><div class="ptext" id="previewText">안녕하세요, 자막 미리보기입니다</div></div>
+            </div>
+            <div class="row"><span class="lbl">폰트</span><select id="selFont"></select></div>
+            <div class="row col">
+              <div class="line"><span class="lbl">크기</span><span class="val" id="lblSize">34 pt</span></div>
+              <input type="range" id="rngSize" min="16" max="72" step="1" />
+            </div>
+            <div class="row"><span class="lbl">두께</span>
+              <select id="selWeight">
+                <option value="regular">보통</option><option value="medium">중간</option>
+                <option value="semibold">약간 굵게</option><option value="bold">굵게</option>
+                <option value="heavy">매우 굵게</option><option value="black">최대</option>
+              </select>
+            </div>
+            <div class="row"><span class="lbl">정렬</span>
+              <div class="seg" id="segAlign">
+                <button data-val="leading">왼쪽</button>
+                <button data-val="center">가운데</button>
+                <button data-val="trailing">오른쪽</button>
+              </div>
+            </div>
+            <div class="row"><span class="lbl" id="lblMaxLines">최대 줄수: 2</span>
+              <div class="stepper"><button id="maxLinesDown">−</button><button id="maxLinesUp">+</button></div>
+            </div>
+            <div class="row"><span class="lbl">글자색</span><span class="spacer"></span>
+              <input type="color" id="colText" /><input type="range" id="alphaText" min="0" max="255" step="1" style="width:90px;flex:0 0 auto" />
+            </div>
+            <div class="row"><span class="lbl">외곽선</span>
+              <label class="sw"><input type="checkbox" id="tgStroke" /><span class="track"></span></label></div>
+            <div class="row" id="rowStrokeColor"><span class="lbl">외곽선 색</span><span class="spacer"></span>
+              <input type="color" id="colStroke" /><input type="range" id="alphaStroke" min="0" max="255" step="1" style="width:90px;flex:0 0 auto" />
+            </div>
+            <div class="row"><span class="lbl">글로우</span>
+              <label class="sw"><input type="checkbox" id="tgGlow" /><span class="track"></span></label></div>
+            <div class="row" id="rowGlowColor"><span class="lbl">글로우 색</span><span class="spacer"></span>
+              <input type="color" id="colGlow" /><input type="range" id="alphaGlow" min="0" max="255" step="1" style="width:90px;flex:0 0 auto" />
+            </div>
+            <div class="row col" id="rowGlowRadius">
+              <div class="line"><span class="lbl">글로우 반경</span><span class="val" id="lblGlow">8</span></div>
+              <input type="range" id="rngGlow" min="0" max="30" step="1" />
+            </div>
+            <div class="row"><span class="lbl">배경 박스</span>
+              <label class="sw"><input type="checkbox" id="tgBg" /><span class="track"></span></label></div>
+            <div class="row col" id="rowBgOpacity">
+              <div class="line"><span class="lbl">배경 불투명도</span><span class="val" id="lblBg">35%</span></div>
+              <input type="range" id="rngBg" min="0" max="1" step="0.01" />
+            </div>
+            <div class="row"><button class="btn" id="btnResetStyle">스타일 기본값으로 리셋</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 오디오 ============ -->
+      <div class="panel" data-cat="audio">
+        <div class="section">
+          <div class="sectitle">번역 오디오</div>
+          <div class="group">
+            <div class="row"><span class="lbl">번역 오디오 재생</span>
+              <label class="sw"><input type="checkbox" id="tgPlayback" /><span class="track"></span></label></div>
+            <div class="row" id="rowOutput"><span class="lbl">출력 장치</span><select id="selOutput"></select></div>
+            <div class="row" id="rowOutputRefresh"><button class="btn" id="btnRefreshOutput">출력 장치 새로고침</button></div>
+            <div class="row" id="rowPlaybackOffCap"><span class="cap">번역 오디오 재생을 켜야 아래 볼륨/덕킹이 적용됩니다.</span></div>
+            <div class="row col">
+              <div class="line"><span class="lbl">번역 볼륨</span><span class="val" id="lblTransVol">100%</span></div>
+              <input type="range" id="rngTransVol" min="0" max="1" step="0.01" />
+            </div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sectitle">원문(시스템) 오디오</div>
+          <div class="group">
+            <div class="row"><span class="lbl">원문 볼륨 덕킹</span>
+              <label class="sw"><input type="checkbox" id="tgDuck" /><span class="track"></span></label></div>
+            <div class="row col">
+              <div class="line"><span class="lbl">원문 볼륨</span><span class="val" id="lblDuckVol">30%</span></div>
+              <input type="range" id="rngDuckVol" min="0" max="1" step="0.01" />
+            </div>
+            <div class="row"><span class="cap">원문 볼륨을 낮추면 같은 출력 장치라도 번역 소리는 자동 보상되어 설정한 번역 볼륨으로 유지됩니다. 번역 볼륨 슬라이더로 번역을 더 강조할 수 있습니다. (보상이 과하면 약간의 음질 저하가 있을 수 있어 최대 4배로 제한됩니다.) 별도 출력 장치를 선택하면 보상 없이 그 장치 볼륨으로 재생됩니다.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 제어 HUD ============ -->
+      <div class="panel" data-cat="monitor">
+        <div class="section">
+          <div class="sectitle">제어 HUD</div>
+          <div class="group">
+            <div class="row"><span class="lbl">제어 HUD 표시</span>
+              <label class="sw"><input type="checkbox" id="tgHud" /><span class="track"></span></label></div>
+            <div class="row"><span class="lbl">캡처 시작 시 자동 표시</span>
+              <label class="sw"><input type="checkbox" id="tgHudAuto" /><span class="track"></span></label></div>
+            <div class="row"><span class="lbl">캡처 정지 시 숨김</span>
+              <label class="sw"><input type="checkbox" id="tgHudHide" /><span class="track"></span></label></div>
+            <div class="row"><button class="btn" id="btnHudReset">위치 리셋</button></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sectitle">자막 녹화</div>
+          <div class="group">
+            <div class="row"><span class="lbl">저장 폴더</span><span class="val" id="recDir" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px;direction:rtl"></span></div>
+            <div class="row"><button class="btn" id="btnChangeRec">변경…</button></div>
+            <div class="row"><span class="cap">제어 HUD의 ‘녹화’ 토글을 켜면 이 폴더에 확정된 자막이 [시각] 원문 → 번역문 형식으로 저장됩니다.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 비용 ============ -->
+      <div class="panel" data-cat="cost">
+        <div class="section">
+          <div class="sectitle">비용 (USD)</div>
+          <div class="group">
+            <div class="row"><span class="lbl">비용 표시 (제어 HUD)</span>
+              <label class="sw"><input type="checkbox" id="tgCostHud" /><span class="track"></span></label></div>
+            <div class="row"><span class="lbl">세션 — 전송</span><span class="val" id="costSInput">$0.0000</span></div>
+            <div class="row"><span class="lbl">세션 — 수신</span><span class="val" id="costSOutput">$0.0000</span></div>
+            <div class="row"><span class="lbl">세션 — 총</span><span class="val" id="costSTotal">$0.0000</span></div>
+            <div class="row"><span class="lbl">누적 — 전송</span><span class="val" id="costCInput">$0.0000</span></div>
+            <div class="row"><span class="lbl">누적 — 수신</span><span class="val" id="costCOutput">$0.0000</span></div>
+            <div class="row"><span class="lbl">누적 — 총</span><span class="val" id="costCTotal">$0.0000</span></div>
+            <div class="row"><button class="btn" id="btnResetCumulative">누적 비용 리셋</button></div>
+            <div class="row"><span class="cap">출력 오디오가 비용의 약 85%를 차지합니다(스펙 §9.2). 단가는 프리뷰 기준으로 변동될 수 있습니다.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 권한 ============ -->
+      <div class="panel" data-cat="permission">
+        <div class="section">
+          <div class="sectitle">권한</div>
+          <div class="group">
+            <div class="row">
+              <span class="dot sec" style="width:14px;height:14px;border-radius:0;background:none;color:var(--secondary)">🎙</span>
+              <span class="lbl">마이크</span>
+              <span class="spacer"></span>
+              <span class="sec" id="permMic">확인 중…</span>
+              <button class="link" id="linkMic">시스템 설정 열기</button>
+            </div>
+            <div class="row">
+              <span class="dot sec" style="width:14px;height:14px;border-radius:0;background:none;color:var(--secondary)">🖥</span>
+              <span class="lbl">시스템 오디오 캡처</span>
+              <span class="spacer"></span>
+              <span class="sec" id="permSys">확인 중…</span>
+              <button class="link" id="linkSys">시스템 설정 열기</button>
+            </div>
+            <div class="row"><button class="btn" id="btnRefreshPerm">권한 상태 새로고침</button></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ API 키 ============ -->
+      <div class="panel" data-cat="apiKey">
+        <div class="section">
+          <div class="sectitle">API 키</div>
+          <div class="group">
+            <div class="row"><span class="lbl">현재</span><span class="val" id="keySource">확인 중…</span></div>
+            <div class="row"><input type="password" id="inKey" placeholder="Gemini API 키 입력" autocomplete="off" /></div>
+            <div class="row">
+              <button class="btn" id="btnTestKey">연결 테스트</button>
+              <button class="btn" id="btnSaveKey">저장</button>
+              <span class="spacer"></span>
+              <button class="btn destructive" id="btnDeleteKey">삭제</button>
+            </div>
+            <div class="row" id="rowTestStatus"><span class="status" id="testStatus"></span></div>
+            <div class="row" id="rowKeyMsg"><span class="cap" id="keyMsg"></span></div>
+            <div class="row"><span class="cap">키를 입력하고 먼저 연결 테스트에 성공해야 저장할 수 있습니다.</span></div>
+            <div class="row"><span class="cap">보안을 위해 키 값은 표시하지 않습니다. 저장된 키는 OS 자격증명 저장소(Keychain 등)에 보관됩니다.</span></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ============ 일반 ============ -->
+      <div class="panel" data-cat="general">
+        <div class="section">
+          <div class="sectitle">업데이트</div>
+          <div class="group">
+            <div class="row"><span class="lbl">현재 버전</span><span class="val" id="curVersion">—</span></div>
+            <div class="row"><span class="lbl">자동으로 업데이트 확인</span>
+              <label class="sw"><input type="checkbox" id="tgAutoUpdate" /><span class="track"></span></label></div>
+            <div class="row"><button class="btn" id="btnCheckUpdate">지금 업데이트 확인</button>
+              <span class="spacer"></span><span class="sec" id="updateMsg"></span></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sectitle">설정 초기화</div>
+          <div class="group">
+            <div class="row"><button class="btn destructive" id="btnReset">설정 초기화</button></div>
+            <div class="row"><span class="cap">입력/자막/스타일/제어 HUD/오디오/비용 누적/위치 등 모든 설정이 기본값으로 되돌아갑니다.</span></div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 설정 초기화 확인 다이얼로그 -->
+  <div class="backdrop" id="resetModal">
+    <div class="dialog">
+      <h3>모든 설정을 초기 상태로 되돌릴까요?</h3>
+      <p>API 키도 함께 삭제할지 선택하세요. ‘설정만 초기화’는 저장된 API 키를 유지합니다.</p>
+      <div class="actions">
+        <button class="btn" id="resetSettingsOnly">설정만 초기화</button>
+        <button class="btn destructive" id="resetWithKey">설정 + API 키 삭제</button>
+        <button class="btn" id="resetCancel">취소</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    (function () {
+      "use strict";
+      const $ = (id) => document.getElementById(id);
+      const api = () => (window.go && window.go.main && window.go.main.SettingsAPI) || null;
+      const app = () => (window.go && window.go.main && window.go.main.App) || null;
+
+      // ---- 상수(원본 목록 그대로) ----
+      const LANGS = [
+        ["ko","한국어"],["en","English"],["ja","日本語"],["zh","中文(简体)"],
+        ["es","Español"],["fr","Français"],["de","Deutsch"],["vi","Tiếng Việt"],
+        ["th","ไทย"],["id","Bahasa Indonesia"],
+      ];
+      // NSFontManager 폰트 목록을 프론트에서 열거할 수 없어 대표 목록으로 대체(원본과 다른 지점).
+      const FONTS = ["Apple SD Gothic Neo","Pretendard","Noto Sans KR","Helvetica Neue","Arial",
+        "SF Pro","Menlo","Georgia","Times New Roman","Verdana"];
+      const WEIGHT_CSS = { regular:400, medium:500, semibold:600, bold:700, heavy:800, black:900 };
+      // settings.go DefaultSettings().Subtitle — 스타일 리셋 기본값.
+      const STYLE_DEFAULT = {
+        fontFamily:"", fontSize:34, fontWeight:"bold", textColor:"#FFFFFFFF",
+        strokeEnabled:true, strokeColor:"#000000E6", strokeWidth:2,
+        glowEnabled:false, glowColor:"#00E5FFCC", glowRadius:8,
+        bgEnabled:true, bgColor:"#000000FF", bgOpacity:0.35, align:"center", maxLines:2,
+      };
+
+      let S = null;          // 현재 config.Settings (파일 단일 소스)
+      let saveTimer = null;  // 디바운스 저장
+      let keyLabel = "없음";
+      let testState = "idle"; // idle|testing|success|failure
+      let testMsg = "";
+
+      // ---- hex 헬퍼 ----
+      function splitHexA(hex) {
+        const s = (hex || "#FFFFFFFF").replace("#","");
+        return { rgb: "#" + s.slice(0,6).padEnd(6,"F"), a: s.length>=8 ? (parseInt(s.slice(6,8),16)||255) : 255 };
+      }
+      function joinHexA(rgb, a) {
+        const base = (rgb||"#FFFFFF").replace("#","").slice(0,6).padEnd(6,"F");
+        const ah = Math.max(0,Math.min(255,a|0)).toString(16).padStart(2,"0");
+        return ("#"+base+ah).toUpperCase();
+      }
+      function hexToRgb(hex) {
+        const s = (hex||"#FFFFFF").replace("#","");
+        return { r: parseInt(s.slice(0,2),16)||0, g: parseInt(s.slice(2,4),16)||0, b: parseInt(s.slice(4,6),16)||0 };
+      }
+      function rgba(hex8, forceAlpha) {
+        const { rgb, a } = splitHexA(hex8);
+        const c = hexToRgb(rgb);
+        const al = forceAlpha != null ? forceAlpha : a/255;
+        return `rgba(${c.r},${c.g},${c.b},${al})`;
+      }
+
+      // ---- 디바운스 저장 ----
+      function commit() {
+        if (!S) return;
+        clearTimeout(saveTimer);
+        saveTimer = setTimeout(async () => {
+          const a = api(); if (!a) return;
+          try { await a.SaveSettings(S); } catch (e) { /* 저장 실패는 조용히(다음 변경 재시도) */ }
+        }, 250);
+      }
+
+      // ---- 사이드바 ----
+      function selectCategory(cat) {
+        document.querySelectorAll(".navitem").forEach(n => n.classList.toggle("on", n.dataset.cat === cat));
+        document.querySelectorAll(".panel").forEach(p => p.classList.toggle("hidden", p.dataset.cat !== cat));
+        $("detail").scrollTop = 0;
+      }
+      document.querySelectorAll(".navitem").forEach(n =>
+        n.addEventListener("click", () => selectCategory(n.dataset.cat)));
+
+      // ---- 셀렉트 채우기 ----
+      function fillSelect(sel, opts, value) {
+        sel.innerHTML = "";
+        for (const [v,l] of opts) {
+          const o = document.createElement("option"); o.value = v; o.textContent = l; sel.appendChild(o);
+        }
+        if (value != null) sel.value = value;
+      }
+
+      async function populateModels() {
+        const a = api();
+        let models = [];
+        try { models = (a && await a.Models()) || []; } catch (_) {}
+        const opts = models.map(m => [m.id || m.ID, m.name || m.Name || m.id]);
+        if (!opts.length) opts.push(["gemini","Gemini Live Translate"]);
+        fillSelect($("selModel"), opts, opts[0][0]);
+        // 모델 요약(원본 model.summary 대체 — 백엔드 Models()에는 summary/capabilities 없음).
+        if (models[0]) $("modelSummary").textContent =
+          (models[0].name || "Gemini Live") + " · 실시간 스트리밍 번역 (엔진: " + (models[0].engine || "geminiLive") + ")";
+      }
+
+      async function populateInput() {
+        const a = api();
+        const opts = [["auto","자동"], ["loopback","시스템 오디오 (직접 캡처)"]];
+        let devs = [];
+        try { devs = (a && await a.ListInputDevices()) || []; } catch (_) {}
+        for (const d of devs) {
+          const id = d.ID || d.id, name = d.Name || d.name;
+          const loop = d.IsLoopbackCandidate || d.isLoopbackCandidate;
+          if (id) opts.push(["device:"+id, (name||id) + (loop ? " (루프백)" : "")]);
+        }
+        let cur = "auto";
+        if (S && S.input) cur = S.input.mode === "device" ? ("device:"+S.input.deviceID) : S.input.mode;
+        if (!opts.some(o => o[0] === cur)) cur = "auto";
+        fillSelect($("selInput"), opts, cur);
+      }
+
+      async function populateOutput() {
+        const a = api();
+        const opts = [["","시스템 기본"]];
+        let devs = [];
+        try { devs = (a && await a.ListOutputDevices()) || []; } catch (_) {}
+        for (const d of devs) {
+          const id = d.ID || d.id, name = d.Name || d.name;
+          if (id) opts.push([id, name||id]);
+        }
+        fillSelect($("selOutput"), opts, (S && S.audio && S.audio.outputDeviceID) || "");
+      }
+
+      // ---- 세그먼트 헬퍼 ----
+      function setSeg(segId, value) {
+        document.querySelectorAll("#"+segId+" button").forEach(b =>
+          b.classList.toggle("on", b.dataset.val === value));
+      }
+      function wireSeg(segId, onPick) {
+        document.querySelectorAll("#"+segId+" button").forEach(b =>
+          b.addEventListener("click", () => { if (b.disabled) return; setSeg(segId, b.dataset.val); onPick(b.dataset.val); }));
+      }
+
+      // ---- 미리보기 ----
+      function applyPreview() {
+        if (!S) return;
+        const sub = S.subtitle;
+        const el = $("previewText");
+        el.style.fontFamily = sub.fontFamily ? ("'"+sub.fontFamily+"', -apple-system, sans-serif") : "-apple-system, system-ui, sans-serif";
+        el.style.fontSize = sub.fontSize + "px";
+        el.style.fontWeight = WEIGHT_CSS[sub.fontWeight] || 700;
+        el.style.color = rgba(sub.textColor);
+        el.style.textAlign = sub.align === "leading" ? "left" : sub.align === "trailing" ? "right" : "center";
+        const shadows = [];
+        if (sub.strokeEnabled) {
+          const sc = splitHexA(sub.strokeColor), c = hexToRgb(sc.rgb);
+          shadows.push(`0 0 1px rgba(${c.r},${c.g},${c.b},0.9)`,
+                       `0 1px 3px rgba(${c.r},${c.g},${c.b},0.8)`,
+                       `0 2px 6px rgba(${c.r},${c.g},${c.b},0.6)`);
+        }
+        if (sub.glowEnabled) {
+          const g = rgba(sub.glowColor);
+          shadows.push(`0 0 ${sub.glowRadius}px ${g}`, `0 0 ${sub.glowRadius*1.6}px ${g}`);
+        }
+        el.style.textShadow = shadows.join(", ");
+        if (sub.bgEnabled) {
+          el.style.background = rgba(sub.bgColor, sub.bgOpacity);
+          el.style.padding = "10px 16px"; el.style.borderRadius = "12px";
+        } else { el.style.background = "none"; el.style.padding = "0"; }
+      }
+
+      // ---- 스타일 컨트롤 → UI 반영 ----
+      function loadStyleControls() {
+        const sub = S.subtitle;
+        fillSelect($("selFont"), [["","시스템 기본"]].concat(FONTS.map(f => [f,f])), sub.fontFamily || "");
+        $("rngSize").value = sub.fontSize; $("lblSize").textContent = Math.round(sub.fontSize) + " pt";
+        $("selWeight").value = sub.fontWeight || "bold";
+        setSeg("segAlign", sub.align || "center");
+        $("lblMaxLines").textContent = "최대 줄수: " + sub.maxLines;
+        { const t = splitHexA(sub.textColor); $("colText").value = t.rgb; $("alphaText").value = t.a; }
+        $("tgStroke").checked = !!sub.strokeEnabled;
+        { const t = splitHexA(sub.strokeColor); $("colStroke").value = t.rgb; $("alphaStroke").value = t.a; }
+        $("tgGlow").checked = !!sub.glowEnabled;
+        { const t = splitHexA(sub.glowColor); $("colGlow").value = t.rgb; $("alphaGlow").value = t.a; }
+        $("rngGlow").value = sub.glowRadius; $("lblGlow").textContent = Math.round(sub.glowRadius);
+        $("tgBg").checked = !!sub.bgEnabled;
+        $("rngBg").value = sub.bgOpacity; $("lblBg").textContent = Math.round(sub.bgOpacity*100) + "%";
+        updateStyleConditionalRows();
+        applyPreview();
+      }
+      function updateStyleConditionalRows() {
+        $("rowStrokeColor").classList.toggle("hidden", !$("tgStroke").checked);
+        $("rowGlowColor").classList.toggle("hidden", !$("tgGlow").checked);
+        $("rowGlowRadius").classList.toggle("hidden", !$("tgGlow").checked);
+        $("rowBgOpacity").classList.toggle("hidden", !$("tgBg").checked);
+      }
+
+      // ---- 오디오 조건부 행 ----
+      function updateAudioRows() {
+        const on = !!(S.audio && S.audio.playbackEnabled);
+        $("tgPlayback").checked = on;
+        $("rowOutput").classList.toggle("hidden", !on);
+        $("rowOutputRefresh").classList.toggle("hidden", !on);
+        $("rowPlaybackOffCap").classList.toggle("hidden", on);
+      }
+
+      // ---- API 키 상태 ----
+      function renderTestStatus() {
+        const el = $("testStatus");
+        el.innerHTML = "";
+        if (testState === "testing") {
+          el.innerHTML = '<span class="spin"></span><span class="sec">테스트 중…</span>';
+        } else if (testState === "success") {
+          el.innerHTML = '<span class="dot green"></span><span class="green">연결됨</span>';
+        } else if (testState === "failure") {
+          el.innerHTML = '<span class="dot red"></span><span class="red">연결 실패: ' + testMsg + '</span>';
+        }
+        $("rowTestStatus").classList.toggle("hidden", testState === "idle");
+      }
+      function renderKeyButtons() {
+        const hasInput = $("inKey").value.trim().length > 0;
+        const hasKey = keyLabel !== "없음";
+        $("btnTestKey").disabled = (!hasInput && !hasKey) || testState === "testing";
+        $("btnSaveKey").disabled = !hasInput || testState !== "success";
+        $("btnDeleteKey").disabled = keyLabel !== "키체인";
+      }
+      async function refreshKeyState() {
+        const a = api(); if (!a) return;
+        try { keyLabel = await a.KeySourceLabel(); } catch (_) { keyLabel = "없음"; }
+        const el = $("keySource");
+        el.textContent = keyLabel === "없음" ? "키 없음 — 키를 입력하세요"
+                       : keyLabel === "환경변수" ? "환경변수 키 사용 중" : "저장된 키 사용 중";
+        el.className = "val " + (keyLabel !== "없음" ? "green" : "sec");
+        renderKeyButtons();
+      }
+
+      async function refreshPermissions() {
+        const a = api(); if (!a) return;
+        const label = (v) => v === "granted" ? "허용됨" : v === "denied" ? "거부됨" : "미확인";
+        try {
+          const p = await a.PermissionStatus();
+          $("permMic").textContent = label(p.microphone || p.Microphone);
+          $("permSys").textContent = label(p.screenRecording || p.ScreenRecording);
+        } catch (_) { $("permMic").textContent = "미확인"; $("permSys").textContent = "미확인"; }
+      }
+
+      function renderCost() {
+        const total = (S.cost && S.cost.cumulativeUSD) || 0;
+        $("costCTotal").textContent = "$" + total.toFixed(4);
+      }
+
+      // =================== 로드 ===================
+      async function loadAll() {
+        const a = api();
+        if (!a) { console.warn("SettingsAPI 미바인드"); return; }
+        try { S = await a.GetSettings(); } catch (e) { console.error("GetSettings 실패", e); return; }
+
+        // 모델
+        await populateModels();
+        setSeg("segVad", (S.vad && S.vad.enabled) ? "client" : "server");
+        $("vadStatus").textContent = (S.vad && S.vad.enabled) ? "클라이언트 게이트 사용" : "서버 VAD 사용 중";
+
+        // 입력
+        await populateInput();
+
+        // 자막 — 번역/위치
+        fillSelect($("selLang"), LANGS, (S.language && S.language.target) || "ko");
+        const mi = (S.position && S.position.monitorIndex) || 0;
+        fillSelect($("selScreen"), [["0","자동 (주 화면)"],["1","화면 2"],["2","화면 3"]], String(mi));
+        setSeg("segVertical", (S.position && S.position.vertical) || "bottom");
+        $("rngVOffset").value = 0.5; // 원본 subtitleVerticalOffset — 백엔드 필드 없음(UI 전용).
+        $("tgShowSource").checked = !!(S.language && S.language.showSource);
+
+        // 자막 스타일
+        loadStyleControls();
+
+        // 오디오
+        await populateOutput();
+        updateAudioRows();
+        $("rngTransVol").value = (S.audio && S.audio.softVolume != null) ? S.audio.softVolume : 1;
+        $("lblTransVol").textContent = Math.round(($("rngTransVol").value)*100) + "%";
+        $("tgDuck").checked = !!(S.audio && S.audio.duckEnabled);
+        $("rngDuckVol").value = (S.audio && S.audio.duckVolume != null) ? S.audio.duckVolume : 0.3;
+        $("lblDuckVol").textContent = Math.round(($("rngDuckVol").value)*100) + "%";
+
+        // 제어 HUD / 녹화
+        $("recDir").textContent = (S.recording && S.recording.directory) || "";
+
+        // 비용
+        $("tgCostHud").checked = !!(S.cost && S.cost.hudEnabled);
+        renderCost();
+
+        // API 키
+        await refreshKeyState();
+        renderTestStatus();
+
+        // 권한
+        refreshPermissions();
+
+        // 일반 — 버전
+        try { $("curVersion").textContent = await a.CurrentVersion(); }
+        catch (_) { const p = app(); if (p) { try { $("curVersion").textContent = await p.CurrentVersion(); } catch (_) {} } }
+      }
+
+      // =================== 배선 ===================
+      function wire() {
+        // 모델
+        $("selModel").addEventListener("change", () => { /* Models() 단일 — 백엔드 selectedModel 필드 없음 */ });
+        wireSeg("segVad", (v) => {
+          if (!S.vad) S.vad = { enabled: false };
+          S.vad.enabled = (v === "client");
+          $("vadStatus").textContent = S.vad.enabled ? "클라이언트 게이트 사용" : "서버 VAD 사용 중";
+          commit();
+        });
+
+        // 입력
+        $("selInput").addEventListener("change", () => {
+          const v = $("selInput").value;
+          S.input = v.indexOf("device:") === 0 ? { mode:"device", deviceID:v.slice(7) } : { mode:v, deviceID:"" };
+          commit();
+        });
+        $("btnRefreshInput").addEventListener("click", async () => {
+          const a = api(); try { if (a && a.RefreshDevices) await a.RefreshDevices(); } catch (_) {}
+          await populateInput();
+        });
+
+        // 자막 — 번역/위치
+        $("selLang").addEventListener("change", () => {
+          if (!S.language) S.language = {}; S.language.target = $("selLang").value; commit();
+        });
+        $("selScreen").addEventListener("change", () => {
+          if (!S.position) S.position = {}; S.position.monitorIndex = parseInt($("selScreen").value,10)||0; commit();
+        });
+        wireSeg("segVertical", (v) => { if (!S.position) S.position = {}; S.position.vertical = v; commit(); });
+        // 세부 위치/캡처 시 표시/테스트 자막 — 백엔드 필드 없음(UI 전용, 저장 안 됨).
+        $("tgShowSource").addEventListener("change", () => {
+          if (!S.language) S.language = {}; S.language.showSource = $("tgShowSource").checked; commit();
+        });
+        $("btnRefreshScreens").addEventListener("click", () => { /* 화면 열거 백엔드 없음 */ });
+
+        // 자막 스타일
+        const sub = () => S.subtitle;
+        $("selFont").addEventListener("change", () => { sub().fontFamily = $("selFont").value; applyPreview(); commit(); });
+        $("rngSize").addEventListener("input", () => { sub().fontSize = parseFloat($("rngSize").value); $("lblSize").textContent = Math.round(sub().fontSize)+" pt"; applyPreview(); commit(); });
+        $("selWeight").addEventListener("change", () => { sub().fontWeight = $("selWeight").value; applyPreview(); commit(); });
+        wireSeg("segAlign", (v) => { sub().align = v; applyPreview(); commit(); });
+        $("maxLinesDown").addEventListener("click", () => { sub().maxLines = Math.max(1, sub().maxLines-1); $("lblMaxLines").textContent = "최대 줄수: "+sub().maxLines; commit(); });
+        $("maxLinesUp").addEventListener("click", () => { sub().maxLines = Math.min(4, sub().maxLines+1); $("lblMaxLines").textContent = "최대 줄수: "+sub().maxLines; commit(); });
+        const bindColor = (colId, alphaId, key) => {
+          const apply = () => { sub()[key] = joinHexA($(colId).value, parseInt($(alphaId).value,10)); applyPreview(); commit(); };
+          $(colId).addEventListener("input", apply); $(alphaId).addEventListener("input", apply);
+        };
+        bindColor("colText","alphaText","textColor");
+        bindColor("colStroke","alphaStroke","strokeColor");
+        bindColor("colGlow","alphaGlow","glowColor");
+        $("tgStroke").addEventListener("change", () => { sub().strokeEnabled = $("tgStroke").checked; updateStyleConditionalRows(); applyPreview(); commit(); });
+        $("tgGlow").addEventListener("change", () => { sub().glowEnabled = $("tgGlow").checked; updateStyleConditionalRows(); applyPreview(); commit(); });
+        $("rngGlow").addEventListener("input", () => { sub().glowRadius = parseFloat($("rngGlow").value); $("lblGlow").textContent = Math.round(sub().glowRadius); applyPreview(); commit(); });
+        $("tgBg").addEventListener("change", () => { sub().bgEnabled = $("tgBg").checked; updateStyleConditionalRows(); applyPreview(); commit(); });
+        $("rngBg").addEventListener("input", () => { sub().bgOpacity = parseFloat($("rngBg").value); $("lblBg").textContent = Math.round(sub().bgOpacity*100)+"%"; applyPreview(); commit(); });
+        $("btnResetStyle").addEventListener("click", () => { S.subtitle = JSON.parse(JSON.stringify(STYLE_DEFAULT)); loadStyleControls(); commit(); });
+
+        // 오디오
+        $("tgPlayback").addEventListener("change", async () => {
+          if (!S.audio) S.audio = {};
+          const wasOff = !S.audio.playbackEnabled;
+          S.audio.playbackEnabled = $("tgPlayback").checked;
+          if (S.audio.playbackEnabled && wasOff) {
+            // 원본: 재생 ON 시 입력을 시스템 직접 캡처로 전환 + 피드백 경고.
+            S.input = { mode:"loopback", deviceID:"" };
+            await populateInput();
+            alert("입력을 ‘시스템 직접 캡처’로 전환했습니다. 스피커/헤드폰으로 듣고 피드백을 막으려면 아래에서 번역 오디오 ‘출력 장치’를 선택하세요. 출력을 캡처용 가상 장치로 두면 번역이 들리지 않고 피드백 루프가 생깁니다.");
+          }
+          updateAudioRows(); commit();
+        });
+        $("selOutput").addEventListener("change", () => { if (!S.audio) S.audio = {}; S.audio.outputDeviceID = $("selOutput").value; commit(); });
+        $("btnRefreshOutput").addEventListener("click", async () => { const a = api(); try { if (a && a.RefreshDevices) await a.RefreshDevices(); } catch (_) {} await populateOutput(); });
+        $("rngTransVol").addEventListener("input", () => { if (!S.audio) S.audio = {}; S.audio.softVolume = parseFloat($("rngTransVol").value); $("lblTransVol").textContent = Math.round(S.audio.softVolume*100)+"%"; commit(); });
+        $("tgDuck").addEventListener("change", () => { if (!S.audio) S.audio = {}; S.audio.duckEnabled = $("tgDuck").checked; commit(); });
+        $("rngDuckVol").addEventListener("input", () => { if (!S.audio) S.audio = {}; S.audio.duckVolume = parseFloat($("rngDuckVol").value); $("lblDuckVol").textContent = Math.round(S.audio.duckVolume*100)+"%"; commit(); });
+
+        // 제어 HUD — 표시/자동표시/숨김/위치 리셋: 백엔드 필드 없음(UI 전용).
+        $("btnChangeRec").addEventListener("click", () => {
+          const cur = (S.recording && S.recording.directory) || "";
+          const v = prompt("자막 녹화 저장 폴더 경로", cur); // NSOpenPanel 대체(폴더 선택 백엔드 없음).
+          if (v != null) { if (!S.recording) S.recording = {}; S.recording.directory = v; $("recDir").textContent = v; commit(); }
+        });
+
+        // 비용
+        $("tgCostHud").addEventListener("change", () => { if (!S.cost) S.cost = {}; S.cost.hudEnabled = $("tgCostHud").checked; commit(); });
+        $("btnResetCumulative").addEventListener("click", () => { if (!S.cost) S.cost = {}; S.cost.cumulativeUSD = 0; renderCost(); commit(); });
+
+        // 권한
+        $("btnRefreshPerm").addEventListener("click", refreshPermissions);
+
+        // API 키
+        $("inKey").addEventListener("input", () => { testState = "idle"; testMsg = ""; $("keyMsg").textContent = ""; renderTestStatus(); renderKeyButtons(); });
+        $("btnTestKey").addEventListener("click", async () => {
+          const a = api(); if (!a) return;
+          testState = "testing"; renderTestStatus(); renderKeyButtons();
+          try {
+            const msg = await a.TestAPIKey($("inKey").value);
+            if (!msg) { testState = "success"; }
+            else { testState = "failure"; testMsg = msg; }
+          } catch (e) { testState = "failure"; testMsg = String(e); }
+          renderTestStatus(); renderKeyButtons();
+        });
+        $("btnSaveKey").addEventListener("click", async () => {
+          const a = api(); if (!a) return;
+          try { await a.SaveAPIKey($("inKey").value); $("inKey").value = ""; $("keyMsg").textContent = "키를 저장했습니다."; testState = "idle"; renderTestStatus(); await refreshKeyState(); }
+          catch (e) { $("keyMsg").textContent = "키 저장에 실패했습니다."; }
+        });
+        $("btnDeleteKey").addEventListener("click", async () => {
+          const a = api(); if (!a) return;
+          try { await a.SaveAPIKey(""); $("inKey").value = ""; $("keyMsg").textContent = "저장된 키를 삭제했습니다."; testState = "idle"; renderTestStatus(); await refreshKeyState(); }
+          catch (e) { $("keyMsg").textContent = "키 삭제에 실패했습니다."; }
+        });
+
+        // 일반 — 업데이트
+        $("btnCheckUpdate").addEventListener("click", async () => {
+          const a = api(); $("updateMsg").textContent = "확인 중…";
+          try {
+            const info = a && a.CheckUpdate ? await a.CheckUpdate() : (app() && await app().CheckUpdate());
+            if (info && (info.available || info.Available)) $("updateMsg").textContent = "새 버전 " + (info.version||info.Version) + " 사용 가능";
+            else $("updateMsg").textContent = "최신 버전입니다";
+          } catch (e) { $("updateMsg").textContent = "확인 실패"; }
+        });
+
+        // 설정 초기화 다이얼로그
+        $("btnReset").addEventListener("click", () => $("resetModal").classList.add("show"));
+        $("resetCancel").addEventListener("click", () => $("resetModal").classList.remove("show"));
+        $("resetSettingsOnly").addEventListener("click", () => doReset(false));
+        $("resetWithKey").addEventListener("click", () => doReset(true));
+      }
+
+      async function doReset(includeKey) {
+        const a = api(); $("resetModal").classList.remove("show");
+        try {
+          if (a && a.ResetAll) await a.ResetAll(includeKey);
+          await loadAll();
+          $("keyMsg").textContent = "";
+        } catch (e) { console.error("ResetAll 실패", e); }
+      }
+
+      window.addEventListener("DOMContentLoaded", async () => {
+        selectCategory("input"); // 원본 기본 선택 = 입력
+        wire();
+        await loadAll();
+      });
+    })();
+  </script>
+</body>
+</html>

@@ -16,11 +16,20 @@ package tray
 // Handlers holds the menu action callbacks invoked from the native tray.
 // 각 콜백은 nil일 수 있다(해당 메뉴 항목 비활성). 콜백은 네이티브 스레드에서
 // 호출될 수 있으므로 구현은 짧게 유지하고 무거운 작업은 위임한다.
+//
+// 메뉴 구성은 원본 liveTranslate MenuBarContent와 동일하다:
+//
+//	번역 시작 ↔ 번역 정지   OnToggleTranslate  (isRunning에 따라 라벨 동적)
+//	--------
+//	✓ 제어 HUD 표시          OnToggleHUD        (표시 상태 체크 표식)
+//	설정…                    OnSettings         (⌘,)
+//	--------
+//	종료                     OnQuit             (⌘Q)
 type Handlers struct {
-	OnStart   func()
-	OnStop    func()
-	OnShowHUD func()
-	OnQuit    func()
+	OnToggleTranslate func()
+	OnToggleHUD       func()
+	OnSettings        func()
+	OnQuit            func()
 }
 
 // handlers is the process-global callback set (single tray per process).

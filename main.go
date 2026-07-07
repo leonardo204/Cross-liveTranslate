@@ -1,12 +1,13 @@
 // Cross-liveTranslate — cross-platform live translation app (Go + Wails v2).
 //
-// Two-process architecture (specs/011-p3-overlay-ui-architecture.md): a single
-// binary dispatches on `-role`:
+// Three-role architecture (specs/013-ui-parity-rewrite.md — 원본 별도 창 구조 재현):
+// a single binary dispatches on `-role`:
 //
-//	controller (default) — control HUD + settings; owns tray, pipeline, and
-//	                        spawns/supervises the overlay child (P3b).
-//	overlay              — full-screen transparent, always-on-top, click-through
-//	                        subtitle window (this file wires the P3a PoC).
+//	controller (default) — 제어 HUD(260×176 작은 플로팅, frameless·투명·always-on-top).
+//	                        트레이·파이프라인 소유. overlay + settings 자식을 spawn·감독한다.
+//	settings             — 설정 창(760×580 표준 타이틀바 "liveTranslate 설정", StartHidden).
+//	                        controller가 control 신호로 show/hide한다. SettingsAPI 바인드.
+//	overlay              — 전체화면 투명·always-on-top·클릭통과 자막 창.
 //
 // Each process embeds the same tree but serves its own frontend via fs.Sub,
 // since Wails allows a single WebviewWindow per process.
@@ -47,13 +48,15 @@ func main() {
 	// flags handled elsewhere (e.g. the updater's) don't abort startup.
 	role := "controller"
 	fset := flag.NewFlagSet("cross-livetranslate", flag.ContinueOnError)
-	fset.StringVar(&role, "role", "controller", "process role: controller | overlay")
+	fset.StringVar(&role, "role", "controller", "process role: controller | settings | overlay")
 	// Ignore parse errors from foreign flags; role keeps its default/value.
 	_ = fset.Parse(os.Args[1:])
 
 	switch role {
 	case "overlay":
 		runOverlay()
+	case "settings":
+		runSettings()
 	default:
 		runController()
 	}
@@ -69,9 +72,17 @@ func subFS(dir string) fs.FS {
 	return sub
 }
 
-// runController boots the control HUD: a small always-on-top window that drives
-// the P2 translation pipeline and supervises the overlay child process (P3b).
-// The bound Controller exposes Start/Stop/SetTarget/SetInput/... to the HUD JS.
+// hudWidth/hudHeight mirror 원본 제어 HUD 크기(FloatingPanel/HUDController). 비용행
+// 표시 시 176이므로 U1은 176 고정으로 두어 잘림을 막는다(원본은 동적 150↔176).
+const (
+	hudWidth  = 260
+	hudHeight = 176
+)
+
+// runController boots the control HUD: a small frameless, transparent,
+// always-on-top window(260×176, 원본 FloatingPanel 재현)이 P2 번역 파이프라인을 구동하고
+// overlay + settings 자식 프로세스를 감독한다. 바인드된 Controller가 ToggleCapture/Start/
+// Stop/ShowSettings/ToggleRecording 등 제어 HUD 계약을 노출한다.
 func runController() {
 	flags := parseControllerFlags()
 
@@ -80,19 +91,27 @@ func runController() {
 	app.ctrl = ctrl
 
 	err := wails.Run(&options.App{
-		Title:       "Cross-liveTranslate",
-		Width:       380,
-		Height:      280,
-		MinWidth:    340,
-		MinHeight:   240,
-		AlwaysOnTop: true,
+		Title:            "Cross-liveTranslate",
+		Width:            hudWidth,
+		Height:           hudHeight,
+		Frameless:        true,
+		AlwaysOnTop:      true,
+		StartHidden:      false,
+		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		AssetServer: &assetserver.Options{
 			Assets: subFS("controller"),
 		},
-		BackgroundColour: &options.RGBA{R: 24, G: 24, B: 28, A: 1},
+		Mac: &mac.Options{
+			WebviewIsTransparent: true,
+			WindowIsTranslucent:  false,
+		},
+		Windows: &windows.Options{
+			WebviewIsTransparent: true,
+		},
 		OnStartup: func(ctx context.Context) {
 			app.startup(ctx)
 			ctrl.start(ctx, flags)
+			positionHUDTopRight(ctx)
 		},
 		OnShutdown: func(ctx context.Context) {
 			ctrl.shutdown()
@@ -104,6 +123,73 @@ func runController() {
 	})
 	if err != nil {
 		log.Fatalln("wails.Run(controller):", err)
+	}
+}
+
+// positionHUDTopRight places the control HUD near the primary screen's top-right
+// (원본 HUDController.defaultOrigin: 우상단 20pt 안쪽, 메뉴바 아래). 실패는 무해(로그만).
+func positionHUDTopRight(ctx context.Context) {
+	screens, err := wruntime.ScreenGetAll(ctx)
+	if err != nil || len(screens) == 0 {
+		return
+	}
+	primary := screens[0]
+	for _, sc := range screens {
+		if sc.IsPrimary {
+			primary = sc
+			break
+		}
+	}
+	w := primary.Size.Width
+	if w == 0 {
+		w = primary.Width
+	}
+	if w == 0 {
+		return
+	}
+	const margin = 20
+	// y는 메뉴바(≈24pt) 아래로 내려 우상단에 배치한다.
+	x := w - hudWidth - margin
+	y := 40
+	if x < 0 {
+		x = 0
+	}
+	wruntime.WindowSetPosition(ctx, x, y)
+}
+
+// runSettings boots the settings window(760×580 표준 타이틀바 "liveTranslate 설정",
+// StartHidden). controller가 control("show")로 표시한다. SettingsAPI + App을 바인드하고
+// (SettingsAPI가 설정 파일·API 키·디바이스·모델·버전 계약을 노출), stdin control 루프를 돈다.
+func runSettings() {
+	app := NewApp()
+	api := newSettingsAPI(app)
+
+	err := wails.Run(&options.App{
+		Title:         "liveTranslate 설정",
+		Width:         760,
+		Height:        580,
+		MinWidth:      760,
+		MinHeight:     580,
+		MaxWidth:      760,
+		MaxHeight:     580,
+		DisableResize: true,
+		StartHidden:   true,
+		AssetServer: &assetserver.Options{
+			Assets: subFS("settings"),
+		},
+		BackgroundColour: &options.RGBA{R: 236, G: 236, B: 238, A: 1},
+		OnStartup: func(ctx context.Context) {
+			app.startup(ctx)
+			api.setCtx(ctx)
+			go runSettingsControlLoop(ctx)
+		},
+		Bind: []interface{}{
+			app,
+			api,
+		},
+	})
+	if err != nil {
+		log.Fatalln("wails.Run(settings):", err)
 	}
 }
 

@@ -1,0 +1,225 @@
+package main
+
+// settings.go — U1: 설정 창(`-role settings`) 프로세스의 백엔드.
+//
+// 원본 liveTranslate는 제어 HUD(FloatingPanel)와 설정 창(NSWindow 760×580,
+// "liveTranslate 설정")이 완전히 별개의 창이다. Wails는 프로세스당 단일 WebviewWindow만
+// 허용하므로, 단일 바이너리를 `-role settings`로 재실행해 설정 창을 별도 프로세스로 띄운다.
+//
+// 프로세스 관계(specs/013-ui-parity-rewrite.md):
+//   - controller(메인)가 settings 자식을 StartHidden으로 spawn·감독한다.
+//   - 트레이 "설정…" 또는 HUD 설정 버튼 → controller.ShowSettings() → settings 자식 stdin으로
+//     control("show") 신호 → settings가 runtime.WindowShow.
+//   - 설정 단일 소스는 settings.json(파일). settings 프로세스가 config.Load/Save를 직접 하고
+//     (원자적 쓰기), 저장 시 stdout으로 control("changed")를 controller에 알린다 → controller가
+//     reload+반영(provider/selection/audio/style). 파일이 단일 소스라 프로세스 분리에도 정합.
+//
+// 이 파일은 SettingsAPI(설정 창 프론트가 호출하는 바인딩) + 제어 채널(stdin control 수신,
+// stdout "changed" 송신)을 정의한다. U1은 계약 확정이 목표이며, 픽셀 정합 폼은 U3에서 재작성한다.
+
+import (
+	"context"
+	"os"
+	"time"
+
+	"cross-livetranslate/internal/audio"
+	"cross-livetranslate/internal/config"
+	"cross-livetranslate/internal/ipc"
+
+	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
+)
+
+// ModelInfo describes a selectable translation model (설정 창 모델 카탈로그).
+// U1은 Gemini Live 1개만 노출한다(온디바이스 경로 미지원 — specs/000).
+type ModelInfo struct {
+	ID              string `json:"id"`
+	Name            string `json:"name"`
+	Engine          string `json:"engine"`
+	ModelIdentifier string `json:"modelIdentifier"`
+}
+
+// PermissionInfo carries OS permission states for the 권한 카테고리 (U1 최소 스텁).
+// U3/후속에서 실제 mac 권한(마이크/화면 녹화) 상태로 채운다.
+type PermissionInfo struct {
+	Microphone      string `json:"microphone"`      // granted|denied|unknown
+	ScreenRecording string `json:"screenRecording"` // granted|denied|unknown
+}
+
+// SettingsAPI is the Wails-bound struct for the settings window
+// (frontend: window.go.main.SettingsAPI.<Method>). 설정 창 프론트(U3)가 사용하는
+// 완전한 바인딩 계약을 정의한다. 파이프라인은 소유하지 않으며(그것은 controller),
+// 설정 파일 Load/Save + API 키 + 디바이스/모델/버전 조회만 담당한다.
+type SettingsAPI struct {
+	ctx context.Context
+	app *App     // 버전/업데이트 위임용(App도 이 프로세스에 바인드됨).
+	out *os.File // controller가 읽는 제어 채널(stdout). "changed" 신호 송신.
+}
+
+// newSettingsAPI creates the settings-window binding backed by stdout control.
+func newSettingsAPI(app *App) *SettingsAPI {
+	return &SettingsAPI{app: app, out: os.Stdout}
+}
+
+// setCtx captures the Wails runtime context (OnStartup).
+func (s *SettingsAPI) setCtx(ctx context.Context) { s.ctx = ctx }
+
+// notifyChanged tells the controller (our parent) that settings.json changed so
+// it reloads + applies (provider/selection/audio/style). Best-effort(로그 없음 —
+// controller가 죽었으면 stdout write가 실패해도 무해).
+func (s *SettingsAPI) notifyChanged() {
+	if s.out == nil {
+		return
+	}
+	_ = ipc.WriteControl(s.out, ipc.ControlMsg{Cmd: "changed"})
+}
+
+// -----------------------------------------------------------------------------
+// Settings + API-key (U3 폼이 사용하는 계약)
+// -----------------------------------------------------------------------------
+
+// GetSettings returns the current persisted settings (파일 단일 소스에서 로드).
+func (s *SettingsAPI) GetSettings() config.Settings {
+	cfg, err := config.Load()
+	if err != nil {
+		return config.DefaultSettings()
+	}
+	return cfg
+}
+
+// SaveSettings validates, persists settings.json, and signals the controller to
+// reload+apply. 반환 에러는 저장 실패 시에만.
+func (s *SettingsAPI) SaveSettings(cfg config.Settings) error {
+	cfg = normalizeSettings(cfg)
+	if err := cfg.Save(); err != nil {
+		return err
+	}
+	s.notifyChanged()
+	return nil
+}
+
+// SaveAPIKey stores(or clears, when empty) the Gemini API key in the OS keyring.
+// 키는 settings.json이 아니라 keyring에만 저장된다. controller가 키 상태를 갱신하도록 신호.
+func (s *SettingsAPI) SaveAPIKey(key string) error {
+	if err := config.SaveAPIKey(key); err != nil {
+		return err
+	}
+	s.notifyChanged()
+	return nil
+}
+
+// TestAPIKey verifies a key and returns "" on success or a user-facing(키 비포함)
+// error message. 키 값은 결코 로그/반환값에 노출하지 않는다.
+func (s *SettingsAPI) TestAPIKey(key string) string {
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := config.TestAPIKey(ctx, key); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// HasAPIKey reports whether a usable Gemini API key exists (env 또는 keyring).
+func (s *SettingsAPI) HasAPIKey() bool { return config.HasAPIKey() }
+
+// KeySourceLabel returns a human-readable API-key source (환경변수/키체인/없음).
+func (s *SettingsAPI) KeySourceLabel() string {
+	if os.Getenv(config.APIKeyEnv) != "" {
+		return "환경변수"
+	}
+	if config.HasAPIKey() {
+		return "키체인"
+	}
+	return "없음"
+}
+
+// -----------------------------------------------------------------------------
+// Devices / models / permissions / version (U3 폼이 사용하는 계약)
+// -----------------------------------------------------------------------------
+
+// ListInputDevices enumerates capture devices for the 입력 카테고리 picker.
+func (s *SettingsAPI) ListInputDevices() []audio.DeviceInfo {
+	devs, err := audio.EnumerateDevices()
+	if err != nil {
+		return []audio.DeviceInfo{}
+	}
+	return devs
+}
+
+// ListOutputDevices enumerates output devices for the 오디오 카테고리 picker.
+// U1: 출력 디바이스 열거 백엔드가 아직 없어 빈 목록을 반환한다(시스템 기본 출력 사용).
+func (s *SettingsAPI) ListOutputDevices() []audio.DeviceInfo {
+	return []audio.DeviceInfo{}
+}
+
+// RefreshDevices is a hook for the UI to force device re-enumeration.
+// U1은 열거가 무상태(매 호출 실측)라 별도 캐시 무효화가 필요 없어 no-op이다.
+func (s *SettingsAPI) RefreshDevices() {}
+
+// Models returns the model catalog (U1: Gemini Live 1개).
+func (s *SettingsAPI) Models() []ModelInfo {
+	return []ModelInfo{
+		{
+			ID:              "gemini-3.5-live-translate",
+			Name:            "Gemini 3.5 Live Translate",
+			Engine:          "geminiLive",
+			ModelIdentifier: config.GeminiModel,
+		},
+	}
+}
+
+// PermissionStatus returns OS permission states (U1 최소 스텁).
+func (s *SettingsAPI) PermissionStatus() PermissionInfo {
+	return PermissionInfo{Microphone: "unknown", ScreenRecording: "unknown"}
+}
+
+// CurrentVersion returns the running application version (설정 일반 카테고리).
+func (s *SettingsAPI) CurrentVersion() string { return appVersion }
+
+// CheckUpdate delegates to the shared updater (App.CheckUpdate) so the settings
+// window can trigger an update check without duplicating the pipeline.
+func (s *SettingsAPI) CheckUpdate() (*UpdateInfo, error) {
+	return s.app.CheckUpdate()
+}
+
+// ResetAll restores default settings(파일)을 되돌리고, includeAPIKey면 keyring 키도 삭제한다.
+// 저장 후 controller에 reload 신호를 보낸다.
+func (s *SettingsAPI) ResetAll(includeAPIKey bool) error {
+	def := config.DefaultSettings()
+	if err := def.Save(); err != nil {
+		return err
+	}
+	if includeAPIKey {
+		if err := config.SaveAPIKey(""); err != nil {
+			return err
+		}
+	}
+	s.notifyChanged()
+	return nil
+}
+
+// -----------------------------------------------------------------------------
+// control channel (stdin: controller → settings, stdout: settings → controller)
+// -----------------------------------------------------------------------------
+
+// runSettingsControlLoop reads control commands from the controller (stdin) and
+// applies them to the settings window: show/hide/quit. stdin EOF(controller 종료)면
+// 설정 프로세스도 종료한다. 별도 goroutine에서 구동한다.
+func runSettingsControlLoop(ctx context.Context) {
+	ipc.Dispatch(os.Stdin, ipc.Handler{
+		OnControl: func(m ipc.ControlMsg) {
+			switch m.Cmd {
+			case "show":
+				wruntime.WindowShow(ctx)
+				wruntime.WindowUnminimise(ctx)
+				wruntime.WindowSetAlwaysOnTop(ctx, true)
+				wruntime.WindowSetAlwaysOnTop(ctx, false)
+			case "hide":
+				wruntime.WindowHide(ctx)
+			case "quit":
+				wruntime.Quit(ctx)
+			}
+		},
+	})
+	// stdin closed → parent(controller) exited. Tear down this child.
+	wruntime.Quit(ctx)
+}

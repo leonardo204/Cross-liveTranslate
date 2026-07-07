@@ -21,6 +21,10 @@ import (
 const (
 	TypeSubtitle = "subtitle"
 	TypeStyle    = "style"
+	// TypeControl carries out-of-band process-control commands between the
+	// controller and its child processes (U1 3-role): controller → settings
+	// child(show/hide/quit), settings child → controller("changed" 설정 반영 신호).
+	TypeControl = "control"
 )
 
 // SubtitleMsg is a single subtitle snapshot pushed controller → overlay.
@@ -58,6 +62,14 @@ type StyleMsg struct {
 	Vertical      string  `json:"vertical"`      // top|middle|bottom.
 }
 
+// ControlMsg carries a process-control command over the same NDJSON stream
+// used for subtitles/styles. Cmd is one of: "show"|"hide"|"quit"(controller →
+// settings child) 또는 "changed"(settings child → controller, 설정 파일이 변경되어
+// controller가 reload+반영해야 함을 알린다).
+type ControlMsg struct {
+	Cmd string `json:"cmd"`
+}
+
 // subtitleEnvelope / styleEnvelope embed the payload alongside a "type" tag so
 // the two message kinds share a single NDJSON stream without ambiguity.
 // 임베딩으로 필드가 평탄화되어 {"type":"subtitle","lines":...} 형태로 직렬화된다.
@@ -69,6 +81,11 @@ type subtitleEnvelope struct {
 type styleEnvelope struct {
 	Type string `json:"type"`
 	StyleMsg
+}
+
+type controlEnvelope struct {
+	Type string `json:"type"`
+	ControlMsg
 }
 
 // typePeek extracts just the "type" tag from a raw JSON line for dispatch.
@@ -100,6 +117,13 @@ func WriteStyle(w io.Writer, m StyleMsg) error {
 	return writeLine(w, styleEnvelope{Type: TypeStyle, StyleMsg: m})
 }
 
+// WriteControl marshals a ControlMsg with a "control" type tag and writes it as
+// one newline-terminated line. controller가 settings 자식 stdin에, settings 자식이
+// controller가 읽는 stdout에 각각 단일 writer로 쓴다.
+func WriteControl(w io.Writer, m ControlMsg) error {
+	return writeLine(w, controlEnvelope{Type: TypeControl, ControlMsg: m})
+}
+
 // writeLine marshals v and emits it as a single newline-terminated line.
 func writeLine(w io.Writer, v any) error {
 	b, err := json.Marshal(v)
@@ -116,6 +140,7 @@ func writeLine(w io.Writer, v any) error {
 type Handler struct {
 	OnSubtitle func(SubtitleMsg)
 	OnStyle    func(StyleMsg)
+	OnControl  func(ControlMsg)
 }
 
 // Dispatch scans r line-by-line and routes each well-formed JSON line to the
@@ -141,6 +166,14 @@ func Dispatch(r io.Reader, h Handler) {
 			}
 			if h.OnStyle != nil {
 				h.OnStyle(m)
+			}
+		case TypeControl:
+			var m ControlMsg
+			if err := json.Unmarshal(line, &m); err != nil {
+				continue
+			}
+			if h.OnControl != nil {
+				h.OnControl(m)
 			}
 		default: // "" or "subtitle"
 			var m SubtitleMsg

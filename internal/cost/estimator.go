@@ -111,6 +111,20 @@ func (e *Estimator) Session() float64 {
 	return e.sessionInputUSD() + e.sessionOutputUSD()
 }
 
+// SessionInput returns the current 세션 입력(전송) 비용 in USD (제어 HUD 비용 행).
+func (e *Estimator) SessionInput() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sessionInputUSD()
+}
+
+// SessionOutput returns the current 세션 출력(수신) 비용 in USD (제어 HUD 비용 행).
+func (e *Estimator) SessionOutput() float64 {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.sessionOutputUSD()
+}
+
 // Cumulative returns the persisted-and-growing cumulative cost in USD.
 func (e *Estimator) Cumulative() float64 {
 	e.mu.Lock()

@@ -102,6 +102,23 @@ type Controller struct {
 	child      *exec.Cmd
 	childStdin io.WriteCloser
 
+	// settings 자식 프로세스(U1). settingsStdin: controller → settings control(show/hide/quit).
+	// settings 자식의 stdout은 spawnSettings에서 별도 goroutine이 읽어 control("changed")를
+	// 받으면 reloadSettings로 파일 변경을 반영한다.
+	settingsChild *exec.Cmd
+	settingsStdin io.WriteCloser
+
+	// hudVisible tracks whether the control-HUD window is currently shown (트레이
+	// "제어 HUD 표시" 체크 표식 + 토글용). 바인딩/트레이 goroutine이 mu 아래 갱신한다.
+	hudVisible bool
+
+	// 제어 HUD 상태(hud:update)용 실시간 입력 신호. countingSource(오디오 dispatch
+	// goroutine)가 매 청크마다 갱신하고, runLoop tick과 emitHUD가 읽는다(atomic — 락 불필요).
+	//   level        — 최근 청크 RMS(0~1), math.Float64bits로 인코딩.
+	//   lastChunkNano — 최근 청크 수신 시각(UnixNano). 무음/정지 감지에 사용.
+	level         atomic.Uint64
+	lastChunkNano atomic.Int64
+
 	// styleCh carries subtitle-style/position snapshots into runLoop so that all
 	// stdin writes (subtitle + style) happen from the single runLoop goroutine
 	// (stdin 단일 writer 불변식 유지 → 레이스 없음). 버퍼로 non-blocking push.
@@ -113,14 +130,15 @@ type Controller struct {
 // newController creates a controller with default language/model settings.
 func newController() *Controller {
 	return &Controller{
-		model:    config.GeminiModel,
-		target:   config.DefaultTargetLanguage,
-		source:   config.DefaultSourceLanguage,
-		sel:      audio.Selection{Mode: audio.SelectAuto},
-		status:   "idle",
-		events:   make(chan pipeline.Event, 256),
-		styleCh:  make(chan ipc.StyleMsg, 8),
-		settings: config.DefaultSettings(),
+		model:      config.GeminiModel,
+		target:     config.DefaultTargetLanguage,
+		source:     config.DefaultSourceLanguage,
+		sel:        audio.Selection{Mode: audio.SelectAuto},
+		status:     "idle",
+		events:     make(chan pipeline.Event, 256),
+		styleCh:    make(chan ipc.StyleMsg, 8),
+		settings:   config.DefaultSettings(),
+		hudVisible: true, // controller 창은 StartHidden:false로 즉시 표시된다.
 	}
 }
 
@@ -206,6 +224,7 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	c.r.Start(ctx)
 
 	c.spawnOverlay()
+	c.spawnSettings()
 	go c.runLoop()
 
 	// 초기 스타일/위치를 오버레이에 전달한다. 오버레이 프론트가 "style:update"를 구독하기
@@ -262,6 +281,105 @@ func (c *Controller) spawnOverlay() {
 		_ = cmd.Wait()
 		log.Println("[controller] overlay child exited")
 	}()
+}
+
+// spawnSettings launches the settings child process (same binary, `-role
+// settings`) as a StartHidden window (U1). controller → settings stdin carries
+// control(show/hide/quit); settings → controller stdout carries control("changed")
+// which triggers reloadSettings(설정 파일 변경 반영). 실패는 치명적이지 않다(로그만).
+func (c *Controller) spawnSettings() {
+	exe, err := os.Executable()
+	if err != nil {
+		log.Println("[controller] os.Executable(settings):", err)
+		return
+	}
+	cmd := exec.Command(exe, "-role", "settings")
+	stdin, err := cmd.StdinPipe()
+	if err != nil {
+		log.Println("[controller] settings stdin pipe:", err)
+		return
+	}
+	stdout, err := cmd.StdoutPipe()
+	if err != nil {
+		log.Println("[controller] settings stdout pipe:", err)
+		_ = stdin.Close()
+		return
+	}
+	// settings 진단 로그(Go log는 stderr로 나간다)는 controller 콘솔로 흘려보낸다.
+	// stdout은 control 채널 전용이라 stderr만 상속시킨다.
+	cmd.Stderr = os.Stderr
+	if err := cmd.Start(); err != nil {
+		log.Println("[controller] settings start:", err)
+		_ = stdin.Close()
+		return
+	}
+	c.settingsChild = cmd
+	c.settingsStdin = stdin
+	log.Printf("[controller] settings child spawned pid=%d", cmd.Process.Pid)
+
+	// settings 자식의 stdout에서 control("changed")를 읽어 파일 변경을 반영한다.
+	go ipc.Dispatch(stdout, ipc.Handler{
+		OnControl: func(m ipc.ControlMsg) {
+			if m.Cmd == "changed" {
+				c.reloadSettings()
+			}
+		},
+	})
+	go func() {
+		_ = cmd.Wait()
+		log.Println("[controller] settings child exited")
+	}()
+}
+
+// ShowSettings signals the settings child to show its window (트레이 "설정…" /
+// HUD 설정 버튼). settings 자식이 없으면(스폰 실패) no-op이다.
+func (c *Controller) ShowSettings() {
+	if c.settingsStdin == nil {
+		return
+	}
+	if err := ipc.WriteControl(c.settingsStdin, ipc.ControlMsg{Cmd: "show"}); err != nil {
+		log.Println("[controller] settings show signal:", err)
+	}
+}
+
+// reloadSettings re-reads settings.json (settings 자식이 변경 후 신호를 보냄) and
+// applies the language/input/audio/style values, hot-swapping the running pipeline
+// and refreshing the overlay style + HUD. API 키도 재조회한다(설정 창에서 변경 가능).
+func (c *Controller) reloadSettings() {
+	s, err := config.Load()
+	if err != nil {
+		log.Println("[controller] settings reload:", err)
+		return
+	}
+	s = normalizeSettings(s)
+
+	c.mu.Lock()
+	c.settings = s
+	c.target = s.Language.Target
+	c.source = s.Language.Source
+	c.showSource = s.Language.ShowSource
+	c.sel = selectionFromSettings(s.Input)
+	running := c.running
+	cfg := c.providerConfigLocked()
+	sel := c.sel
+	audioCfg := c.settings.Audio
+	c.mu.Unlock()
+
+	if running && c.r != nil {
+		c.r.SetProviderConfig(cfg)
+		c.r.SetSelection(sel)
+	}
+	c.applyAudioPolicy(audioCfg, running)
+	c.queueStyle()
+
+	// API 키가 설정 창에서 변경됐을 수 있으므로 재조회한다(값은 노출하지 않음).
+	key, kerr := config.APIKey()
+	c.mu.Lock()
+	c.apiKey, c.apiKeyErr = key, kerr
+	c.mu.Unlock()
+
+	c.emitHUD()
+	c.emitStatus()
 }
 
 // pushSubtitle marshals the current engine display state and writes it to the
@@ -324,6 +442,7 @@ func (c *Controller) runLoop() {
 			eng.Heartbeat(now)
 			maybePush()
 			c.accountInputCost(now)
+			c.emitHUD() // 제어 HUD 실시간 상태(레벨/발화/상태) 주기 갱신.
 			statsTick++
 			if statsTick%20 == 0 { // 250ms × 20 ≈ 5s
 				logPlayerStats()
@@ -446,11 +565,11 @@ func (c *Controller) providerConfigLocked() app.ProviderConfig {
 //   - playing = PlaybackEnabled && running(번역 실행 중).
 //   - playing false → player.Stop() + ducker.Restore().
 //   - playing true → 출력장치 반영 후 player.Start(멱등):
-//       · DuckEnabled + 덕킹 지원 → ducker.Duck(DuckVolume).
-//       · 기본 출력 공유(OutputDeviceID=="")면 게인보상 = min(1/DuckVolume,4.0) × SoftVolume
-//         (원음과 함께 작아진 번역 음량을 되살림, tanh 리미터는 player.Enqueue에서 적용).
-//       · 별도 출력장치면 게인 = SoftVolume(번역이 덕킹 영향 없음, 덕킹은 정책대로 원음에만).
-//       · DuckEnabled off / 미지원 장치 → ducker.Restore(), 게인 = SoftVolume.
+//     · DuckEnabled + 덕킹 지원 → ducker.Duck(DuckVolume).
+//     · 기본 출력 공유(OutputDeviceID=="")면 게인보상 = min(1/DuckVolume,4.0) × SoftVolume
+//     (원음과 함께 작아진 번역 음량을 되살림, tanh 리미터는 player.Enqueue에서 적용).
+//     · 별도 출력장치면 게인 = SoftVolume(번역이 덕킹 영향 없음, 덕킹은 정책대로 원음에만).
+//     · DuckEnabled off / 미지원 장치 → ducker.Restore(), 게인 = SoftVolume.
 //
 // player/ducker는 start()에서 생성되어 nil이 아니지만 방어적으로 검사한다. 여러 goroutine
 // (Start/Stop/SaveSettings/PermanentFailure)에서 호출될 수 있으나 각 메서드는 짧고 멱등하며,
@@ -524,24 +643,27 @@ func (c *Controller) shutdown() {
 		if c.childStdin != nil {
 			_ = c.childStdin.Close()
 		}
+		// settings 자식도 함께 종료한다(전체 종료 — overlay/settings까지 kill).
+		if c.settingsChild != nil && c.settingsChild.Process != nil {
+			_ = c.settingsChild.Process.Kill()
+		}
+		if c.settingsStdin != nil {
+			_ = c.settingsStdin.Close()
+		}
 		if c.r != nil {
 			c.r.Close()
 		}
 	})
 }
 
-// initTray installs the system tray (menu bar) with Start/Stop/Show HUD/Quit.
+// initTray installs the system tray (menu bar) mirroring the 원본 메뉴 구성:
+// 번역 시작/정지 · 제어 HUD 표시(체크) · 설정… · 종료. 콜백을 controller로 브릿지한다.
 // 트레이는 부차 목표: 실패해도 core 통합에 영향을 주지 않는다(로그만).
 func (c *Controller) initTray() {
 	err := tray.Init(tray.Handlers{
-		OnStart: func() { _ = c.Start() },
-		OnStop:  func() { _ = c.Stop() },
-		OnShowHUD: func() {
-			if c.ctx != nil {
-				wruntime.WindowShow(c.ctx)
-				wruntime.WindowUnminimise(c.ctx)
-			}
-		},
+		OnToggleTranslate: func() { _ = c.ToggleCapture() },
+		OnToggleHUD:       func() { c.toggleHUD() },
+		OnSettings:        func() { c.ShowSettings() },
 		OnQuit: func() {
 			if c.ctx != nil {
 				wruntime.Quit(c.ctx)
@@ -552,6 +674,27 @@ func (c *Controller) initTray() {
 		log.Println("[controller] tray init:", err)
 	}
 	tray.SetStatus(c.Status())
+	tray.SetRunning(c.IsRunning())
+	tray.SetHUDVisible(true)
+}
+
+// toggleHUD shows/hides the control-HUD window (트레이 "제어 HUD 표시").
+// 표시 상태를 트레이 체크 표식에 반영한다.
+func (c *Controller) toggleHUD() {
+	if c.ctx == nil {
+		return
+	}
+	c.mu.Lock()
+	vis := !c.hudVisible
+	c.hudVisible = vis
+	c.mu.Unlock()
+	if vis {
+		wruntime.WindowShow(c.ctx)
+		wruntime.WindowUnminimise(c.ctx)
+	} else {
+		wruntime.WindowHide(c.ctx)
+	}
+	tray.SetHUDVisible(vis)
 }
 
 // -----------------------------------------------------------------------------
@@ -605,6 +748,15 @@ func (c *Controller) Stop() error {
 	c.persistCumulative()
 	c.emitStatus()
 	return nil
+}
+
+// ToggleCapture flips translation on/off (제어 HUD 시작·정지 버튼 / 트레이 번역 토글).
+// 원본 AppState.toggleCapture 등가.
+func (c *Controller) ToggleCapture() error {
+	if c.IsRunning() {
+		return c.Stop()
+	}
+	return c.Start()
 }
 
 // IsRunning reports whether translation is currently active.
@@ -857,17 +1009,20 @@ func clamp01(v float64) float64 {
 // countingSource wraps a source so every forwarded chunk's sample count is added
 // to c.sentSamples (입력 비용 근거). 게이트 통과 후 실제 송신될 청크만 계량된다.
 type countingSource struct {
-	src   audio.Source
-	total *atomic.Int64
+	src  audio.Source
+	ctrl *Controller
 }
 
 func (c *Controller) countingSource(src audio.Source) audio.Source {
-	return &countingSource{src: src, total: &c.sentSamples}
+	return &countingSource{src: src, ctrl: c}
 }
 
 func (s *countingSource) Start(ctx context.Context, onChunk func(audio.Chunk)) error {
 	return s.src.Start(ctx, func(chunk audio.Chunk) {
-		s.total.Add(int64(len(chunk)))
+		s.ctrl.sentSamples.Add(int64(len(chunk)))
+		// 제어 HUD 레벨 미터(원본 audio.level): 청크 RMS + 수신 시각을 atomic으로 기록한다.
+		s.ctrl.level.Store(math.Float64bits(float64(audio.RMS(chunk))))
+		s.ctrl.lastChunkNano.Store(time.Now().UnixNano())
 		onChunk(chunk)
 	})
 }
@@ -965,6 +1120,15 @@ func (c *Controller) StopRecording() error {
 	return err
 }
 
+// ToggleRecording flips subtitle recording on/off (제어 HUD 녹화 토글 버튼).
+// 시작 시 기본 파일(타임스탬프, 새로쓰기)로 연다. 원본 AppState.toggleRecording 등가.
+func (c *Controller) ToggleRecording() error {
+	if c.IsRecording() {
+		return c.StopRecording()
+	}
+	return c.StartRecording("", false)
+}
+
 // IsRecording reports whether subtitle recording is active.
 func (c *Controller) IsRecording() bool {
 	return c.recorder != nil && c.recorder.IsRecording()
@@ -989,13 +1153,143 @@ func (c *Controller) setStatus(s string) {
 	c.emitStatus()
 }
 
-// emitStatus pushes the current status to the HUD frontend (best-effort).
+// emitStatus pushes the current status to the HUD frontend (best-effort) and
+// syncs the tray tooltip + 번역 토글 라벨.
 func (c *Controller) emitStatus() {
 	if c.ctx == nil {
 		return
 	}
-	wruntime.EventsEmit(c.ctx, "status:update", c.Status())
-	tray.SetStatus(c.Status())
+	st := c.Status()
+	wruntime.EventsEmit(c.ctx, "status:update", st)
+	tray.SetStatus(st)
+	tray.SetRunning(c.IsRunning())
+	c.emitHUD()
+}
+
+// -----------------------------------------------------------------------------
+// 제어 HUD 상태 이벤트 (hud:update) — 원본 MonitorHUD가 표시하는 필드 전부.
+// -----------------------------------------------------------------------------
+
+// hudPayload mirrors 원본 MonitorHUD의 표시 상태(캡처/레벨/VAD/소스/키/비용/녹화).
+// U2 제어 HUD 프론트가 이 payload를 그대로 그린다(계약).
+type hudPayload struct {
+	Capturing         bool    `json:"capturing"`
+	StatusText        string  `json:"statusText"` // "캡처중" | "정지"
+	Level             float64 `json:"level"`      // 0~1 입력 RMS
+	VADEnabled        bool    `json:"vadEnabled"`
+	Speaking          bool    `json:"speaking"`
+	ActiveSourceLabel string  `json:"activeSourceLabel"`
+	APIKeyLoaded      bool    `json:"apiKeyLoaded"`
+	GeminiStatus      string  `json:"geminiStatus"`
+	CostHUDEnabled    bool    `json:"costHUDEnabled"`
+	SentUSD           float64 `json:"sentUSD"`
+	RecvUSD           float64 `json:"recvUSD"`
+	TotalUSD          float64 `json:"totalUSD"`
+	Recording         bool    `json:"recording"`
+	IsRunning         bool    `json:"isRunning"`
+}
+
+// buildHUD snapshots the current control-HUD display state. 어느 goroutine에서든
+// 호출 가능(estimator/atomic/락 모두 스레드-세이프).
+func (c *Controller) buildHUD() hudPayload {
+	c.mu.Lock()
+	running := c.running
+	vadOn := c.settings.VAD.Enabled
+	costHUD := c.settings.Cost.HUDEnabled
+	sel := c.sel
+	status := c.status
+	keyLoaded := c.apiKeyErr == nil
+	c.mu.Unlock()
+
+	// 최근 청크 유무로 무음/정지 시 레벨을 0으로 감쇠한다(원본 clampedLevel: 캡처 중 아니면 0).
+	now := time.Now().UnixNano()
+	last := c.lastChunkNano.Load()
+	recent := last != 0 && now-last < int64(400*time.Millisecond)
+	level := 0.0
+	if recent && running {
+		level = math.Float64frombits(c.level.Load())
+	}
+	if level < 0 {
+		level = 0
+	} else if level > 1 {
+		level = 1
+	}
+
+	capturing := running
+	speaking := running && vadOn && recent
+	statusText := "정지"
+	if capturing {
+		statusText = "캡처중"
+	}
+
+	var sent, recv, total float64
+	if c.estimator != nil {
+		sent = c.estimator.SessionInput()
+		recv = c.estimator.SessionOutput()
+		total = c.estimator.Session()
+	}
+
+	return hudPayload{
+		Capturing:         capturing,
+		StatusText:        statusText,
+		Level:             level,
+		VADEnabled:        vadOn,
+		Speaking:          speaking,
+		ActiveSourceLabel: activeSourceLabel(sel),
+		APIKeyLoaded:      keyLoaded,
+		GeminiStatus:      geminiStatusText(status, keyLoaded),
+		CostHUDEnabled:    costHUD,
+		SentUSD:           sent,
+		RecvUSD:           recv,
+		TotalUSD:          total,
+		Recording:         c.IsRecording(),
+		IsRunning:         running,
+	}
+}
+
+// emitHUD pushes the current control-HUD state to the HUD frontend (best-effort).
+func (c *Controller) emitHUD() {
+	if c.ctx == nil {
+		return
+	}
+	wruntime.EventsEmit(c.ctx, "hud:update", c.buildHUD())
+}
+
+// activeSourceLabel maps the current selection to 원본 activeSourceLabel 문구.
+func activeSourceLabel(sel audio.Selection) string {
+	switch sel.Mode {
+	case audio.SelectMic:
+		return "마이크"
+	case audio.SelectLoopback:
+		return "시스템 소리(루프백)"
+	case audio.SelectDevice:
+		if sel.DeviceID != "" {
+			return "장치: " + sel.DeviceID
+		}
+		return "장치(미지정)"
+	default:
+		return "자동 선택"
+	}
+}
+
+// geminiStatusText maps the controller's internal status string to 원본 AppState의
+// geminiStatus 문구(제어 HUD 하단 "번역: <상태>"에 쓰인다).
+func geminiStatusText(status string, keyLoaded bool) string {
+	if !keyLoaded {
+		return "API 키 없음 — 설정에서 Gemini API 키를 입력하세요"
+	}
+	switch {
+	case strings.Contains(status, "ready"):
+		return "번역 중"
+	case strings.Contains(status, "connecting"), status == "starting":
+		return "연결 중…"
+	case strings.Contains(status, "disconnected"), status == "stopped", status == "idle":
+		return "연결 안 됨"
+	case status == "failed", strings.Contains(status, "error"):
+		return "오류"
+	default:
+		return status
+	}
 }
 
 // -----------------------------------------------------------------------------

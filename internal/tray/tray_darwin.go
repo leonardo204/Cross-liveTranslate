@@ -23,31 +23,49 @@ func Init(h Handlers) error {
 	return nil
 }
 
-// SetStatus updates the status-bar tooltip text.
+// SetStatus updates the status-bar item's tooltip text.
 func SetStatus(text string) {
 	ctext := C.CString(text)
 	defer C.free(unsafe.Pointer(ctext))
 	C.lt_tray_set_status(ctext)
 }
 
-//export lt_tray_go_start
-func lt_tray_go_start() {
-	if handlers.OnStart != nil {
-		handlers.OnStart()
+// SetRunning toggles the 번역 시작/정지 menu item label.
+func SetRunning(running bool) {
+	v := C.int(0)
+	if running {
+		v = 1
+	}
+	C.lt_tray_set_running(v)
+}
+
+// SetHUDVisible toggles the 제어 HUD 표시 menu item check mark.
+func SetHUDVisible(visible bool) {
+	v := C.int(0)
+	if visible {
+		v = 1
+	}
+	C.lt_tray_set_hud_visible(v)
+}
+
+//export lt_tray_go_toggle_translate
+func lt_tray_go_toggle_translate() {
+	if handlers.OnToggleTranslate != nil {
+		handlers.OnToggleTranslate()
 	}
 }
 
-//export lt_tray_go_stop
-func lt_tray_go_stop() {
-	if handlers.OnStop != nil {
-		handlers.OnStop()
+//export lt_tray_go_toggle_hud
+func lt_tray_go_toggle_hud() {
+	if handlers.OnToggleHUD != nil {
+		handlers.OnToggleHUD()
 	}
 }
 
-//export lt_tray_go_show
-func lt_tray_go_show() {
-	if handlers.OnShowHUD != nil {
-		handlers.OnShowHUD()
+//export lt_tray_go_settings
+func lt_tray_go_settings() {
+	if handlers.OnSettings != nil {
+		handlers.OnSettings()
 	}
 }
 

@@ -21,6 +21,10 @@
         <string>10.13.0</string>
         <key>NSHighResolutionCapable</key>
         <string>true</string>
+        <key>NSMicrophoneUsageDescription</key>
+        <string>실시간 번역을 위해 마이크 입력을 사용합니다</string>
+        <key>NSAudioCaptureUsageDescription</key>
+        <string>실시간 번역을 위해 시스템에서 재생되는 오디오를 캡처합니다</string>
         <key>NSHumanReadableCopyright</key>
         <string>{{.Info.Copyright}}</string>
         {{if .Info.FileAssociations}}

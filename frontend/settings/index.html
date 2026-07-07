@@ -1027,6 +1027,8 @@
 
         // 권한
         $("btnRefreshPerm").addEventListener("click", refreshPermissions);
+        $("linkMic").addEventListener("click", () => a().OpenSystemSettings("microphone"));
+        $("linkSys").addEventListener("click", () => a().OpenSystemSettings("screencapture"));
 
         // API 키
         $("inKey").addEventListener("input", () => { testState = "idle"; testMsg = ""; $("keyMsg").textContent = ""; renderTestStatus(); renderKeyButtons(); });

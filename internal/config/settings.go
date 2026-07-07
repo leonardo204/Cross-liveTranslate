@@ -165,7 +165,7 @@ func DefaultSettings() Settings {
 			Directory: defaultRecordingDir(),
 		},
 		VAD: VADSettings{
-			Enabled: false, // Wave 3에서 배선 — 기본 bypass
+			Enabled: true, // 원본 VAD 기본 on(발화 구간만 전송해 비용 절감). 끄면 전 구간 통과.
 		},
 		Update: UpdateSettings{
 			AutoCheck: true, // 원본 SUEnableAutomaticChecks=true — 기본 자동 확인 on.

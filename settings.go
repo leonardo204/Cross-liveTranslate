@@ -20,6 +20,8 @@ package main
 import (
 	"context"
 	"os"
+	"os/exec"
+	"runtime"
 	"sync"
 	"time"
 
@@ -190,6 +192,37 @@ func (s *SettingsAPI) ListScreens() []display.ScreenInfo {
 		return []display.ScreenInfo{}
 	}
 	return screens
+}
+
+// OpenSystemSettings opens the macOS Privacy & Security pane for the given
+// permission (원본 PermissionHelper deep link 이식). pane: "microphone" |
+// "screencapture" | "privacy". 다른 OS/실패는 무시(no-op).
+func (s *SettingsAPI) OpenSystemSettings(pane string) {
+	var url string
+	switch pane {
+	case "microphone":
+		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+	case "screencapture":
+		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
+	default:
+		url = "x-apple.systempreferences:com.apple.preference.security"
+	}
+	openURL(url)
+}
+
+// openURL opens a URL/deep-link via the OS handler. runtime.BrowserOpenURL is
+// unreliable inside signed macOS bundles, so we shell out (wails 스킬 권고).
+func openURL(url string) {
+	var cmd *exec.Cmd
+	switch runtime.GOOS {
+	case "darwin":
+		cmd = exec.Command("open", url)
+	case "windows":
+		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
+	default:
+		cmd = exec.Command("xdg-open", url)
+	}
+	_ = cmd.Start()
 }
 
 // Models returns the model catalog (U1: Gemini Live 1개).

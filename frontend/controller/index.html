@@ -77,6 +77,15 @@
     .status-dot.capturing { background: var(--red); }
     .status-text { font-size: 11px; font-weight: 600; color: var(--primary); }
     .spacer { flex: 1 1 auto; }
+    /* 업데이트 배지: 자동 확인이 새 버전을 발견했을 때만 표시(원본 Sparkle 알림 대체).
+       클릭 시 App.DownloadAndInstallUpdate 로 설치. 평소 display:none — 레이아웃 미영향. */
+    .update-btn {
+      flex: 0 0 auto; display: none; align-items: center; gap: 3px;
+      height: 16px; padding: 0 6px; border-radius: 8px;
+      background: var(--accent); color: #fff;
+      font-size: 10px; font-weight: 600; line-height: 1;
+    }
+    .update-btn.show { display: inline-flex; }
     /* 발화 인디케이터: HStack(spacing:3) 아이콘 + 텍스트 */
     .speak { display: flex; align-items: center; gap: 3px; }
     .speak .ico { display: inline-flex; color: var(--secondary); }
@@ -170,6 +179,7 @@
     <div class="header">
       <span id="dot" class="status-dot"></span>
       <span id="statusText" class="status-text">정지</span>
+      <button id="updateBtn" class="update-btn" type="button" title="업데이트 설치">업데이트</button>
       <span class="spacer"></span>
       <span id="speak" class="speak">
         <span class="ico"></span><span class="label">무음</span>
@@ -218,6 +228,10 @@
       var ctrl = function () {
         return (window.go && window.go.main && window.go.main.Controller) || null;
       };
+      // App은 controller 프로세스에도 바인드된다(main.go runController) — 업데이트 설치용.
+      var appBind = function () {
+        return (window.go && window.go.main && window.go.main.App) || null;
+      };
       var usd = function (v) { return "$" + (Number(v) || 0).toFixed(4); };
 
       // ---- SF Symbol 근사 (인라인 SVG, fill=currentColor) ----
@@ -262,6 +276,15 @@
         var capturing = !!h.capturing;
         $("dot").classList.toggle("capturing", capturing);
         $("statusText").textContent = h.statusText || (capturing ? "캡처중" : "정지");
+
+        // 업데이트 배지 — 자동 확인이 새 버전을 발견하면 표시(원본 Sparkle 알림 대체).
+        var upd = $("updateBtn");
+        if (h.updateAvailable) {
+          upd.classList.add("show");
+          upd.textContent = "업데이트 " + (h.updateVersion || "");
+        } else {
+          upd.classList.remove("show");
+        }
 
         // 발화 인디케이터: active = capturing && vadEnabled && speaking
         var active = capturing && !!h.vadEnabled && !!h.speaking;
@@ -319,6 +342,10 @@
         $("toggle").addEventListener("click", function () { var c = ctrl(); if (c) c.ToggleCapture(); });
         $("rec").addEventListener("click", function () { var c = ctrl(); if (c) c.ToggleRecording(); });
         $("gear").addEventListener("click", function () { var c = ctrl(); if (c) c.ShowSettings(); });
+        // 업데이트 배지 클릭 → 스테이징된 업데이트 다운로드/검증/교체 후 앱 재시작.
+        $("updateBtn").addEventListener("click", function () {
+          var a = appBind(); if (a && a.DownloadAndInstallUpdate) a.DownloadAndInstallUpdate();
+        });
       }
 
       // hud:update 구독(250ms + 변화 시). payload를 그대로 render.

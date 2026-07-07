@@ -93,6 +93,14 @@ type VADSettings struct {
 	Enabled bool `json:"enabled"` // 기본 false(미배선 — Wave 3에서 활성).
 }
 
+// UpdateSettings holds auto-update-check preference (원본 Sparkle SUEnableAutomaticChecks).
+// 원본 liveTranslate는 Info.plist SUEnableAutomaticChecks=true + SUScheduledCheckInterval=86400
+// 으로 앱 실행 시 + 24시간 주기 자동 확인을 하며, 사용자 토글(automaticallyChecksForUpdates)로
+// on/off 한다. 이 필드가 그 토글을 영속한다.
+type UpdateSettings struct {
+	AutoCheck bool `json:"autoCheck"` // 자동 주기 업데이트 확인(원본 기본 true).
+}
+
 // Settings is the full persisted user-settings model.
 // 모든 후속 웨이브 기능이 여기에 필드를 꽂는다.
 type Settings struct {
@@ -104,6 +112,7 @@ type Settings struct {
 	Cost      CostSettings      `json:"cost"`
 	Recording RecordingSettings `json:"recording"`
 	VAD       VADSettings       `json:"vad"`
+	Update    UpdateSettings    `json:"update"`
 }
 
 // DefaultSettings returns the deterministic first-run defaults.
@@ -157,6 +166,9 @@ func DefaultSettings() Settings {
 		},
 		VAD: VADSettings{
 			Enabled: false, // Wave 3에서 배선 — 기본 bypass
+		},
+		Update: UpdateSettings{
+			AutoCheck: true, // 원본 SUEnableAutomaticChecks=true — 기본 자동 확인 on.
 		},
 	}
 }

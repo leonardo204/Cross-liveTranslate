@@ -580,6 +580,7 @@
             <div class="row"><span class="lbl">자동으로 업데이트 확인</span>
               <label class="sw"><input type="checkbox" id="tgAutoUpdate" /><span class="track"></span></label></div>
             <div class="row"><button class="btn" id="btnCheckUpdate">지금 업데이트 확인</button>
+              <button class="btn" id="btnInstallUpdate" style="display:none">지금 설치</button>
               <span class="spacer"></span><span class="sec" id="updateMsg"></span></div>
           </div>
         </div>
@@ -919,6 +920,10 @@
         // 일반 — 버전
         try { $("curVersion").textContent = await a.CurrentVersion(); }
         catch (_) { const p = app(); if (p) { try { $("curVersion").textContent = await p.CurrentVersion(); } catch (_) {} } }
+
+        // 일반 — 자동 업데이트 확인 토글(원본 SUEnableAutomaticChecks, 기본 true).
+        // 백엔드에 update.autoCheck 필드가 없으면(전방호환) 기본 켜짐으로 표시한다.
+        $("tgAutoUpdate").checked = (S.update && S.update.autoCheck !== undefined) ? !!S.update.autoCheck : true;
       }
 
       // =================== 배선 ===================
@@ -1046,14 +1051,34 @@
           catch (e) { $("keyMsg").textContent = "키 삭제에 실패했습니다."; }
         });
 
-        // 일반 — 업데이트
+        // 일반 — 자동 업데이트 확인 토글(즉시 저장 → controller가 reload해 자동체크 on/off 반영).
+        $("tgAutoUpdate").addEventListener("change", () => {
+          if (!S.update) S.update = {};
+          S.update.autoCheck = $("tgAutoUpdate").checked;
+          commit();
+        });
+
+        // 일반 — 업데이트 확인. CheckUpdate가 available면 pending을 스테이징하므로
+        // '지금 설치'(DownloadAndInstallUpdate)를 노출한다(원본 Sparkle 설치 흐름 재사용).
         $("btnCheckUpdate").addEventListener("click", async () => {
           const a = api(); $("updateMsg").textContent = "확인 중…";
+          $("btnInstallUpdate").style.display = "none";
           try {
             const info = a && a.CheckUpdate ? await a.CheckUpdate() : (app() && await app().CheckUpdate());
-            if (info && (info.available || info.Available)) $("updateMsg").textContent = "새 버전 " + (info.version||info.Version) + " 사용 가능";
-            else $("updateMsg").textContent = "최신 버전입니다";
+            if (info && (info.available || info.Available)) {
+              $("updateMsg").textContent = "새 버전 " + (info.version||info.Version) + " 사용 가능";
+              $("btnInstallUpdate").style.display = "";
+            } else {
+              $("updateMsg").textContent = "최신 버전입니다";
+            }
           } catch (e) { $("updateMsg").textContent = "확인 실패"; }
+        });
+        // '지금 설치' — 스테이징된 업데이트를 다운로드/검증/교체 후 앱을 재시작한다.
+        $("btnInstallUpdate").addEventListener("click", async () => {
+          const p = app(); if (!p || !p.DownloadAndInstallUpdate) return;
+          $("updateMsg").textContent = "설치 중…";
+          try { await p.DownloadAndInstallUpdate(); }
+          catch (e) { $("updateMsg").textContent = "설치 실패"; }
         });
 
         // 설정 초기화 다이얼로그

@@ -6,6 +6,7 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -54,7 +55,18 @@ func (a *App) CurrentVersion() string {
 // CheckUpdate downloads the latest.json manifest, compares versions, and
 // stages the platform-specific asset info for DownloadAndInstallUpdate.
 // Returns UpdateInfo describing whether a newer version is available.
+//
+// 프론트(설정 창) 바인딩 진입점 — 실제 로직은 checkUpdateWithCtx로 공용화되어
+// controller의 자동 주기 체크 goroutine과 코드를 공유한다(중복 구현 금지).
 func (a *App) CheckUpdate() (*UpdateInfo, error) {
+	return checkUpdateWithCtx(a.ctx)
+}
+
+// checkUpdateWithCtx performs the manifest fetch + version compare + pending-asset
+// staging for a given context. App.CheckUpdate(설정 창) 및 controller의 자동 주기
+// 체크가 이 단일 구현을 공유한다. pendingUpd(package-level)에 스테이징하므로 같은
+// 프로세스 안에서 CheckUpdate → DownloadAndInstallUpdate 흐름이 정합한다.
+func checkUpdateWithCtx(ctx context.Context) (*UpdateInfo, error) {
 	if updaterEndpoint == "" || updaterPubKey == "" {
 		return &UpdateInfo{
 			Version:        appVersion,
@@ -63,7 +75,7 @@ func (a *App) CheckUpdate() (*UpdateInfo, error) {
 		}, nil
 	}
 
-	manifest, err := updater.FetchManifest(a.ctx, updaterEndpoint)
+	manifest, err := updater.FetchManifest(ctx, updaterEndpoint)
 	if err != nil {
 		return nil, fmt.Errorf("manifest 조회 실패: %w", err)
 	}

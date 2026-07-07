@@ -119,6 +119,16 @@ type Controller struct {
 	// "제어 HUD 표시" 체크 표식 + 토글용). 바인딩/트레이 goroutine이 mu 아래 갱신한다.
 	hudVisible bool
 
+	// 자동 주기 업데이트 확인(원본 Sparkle SUEnableAutomaticChecks + SUScheduledCheckInterval).
+	// autoUpdateLoop goroutine이 Settings.Update.AutoCheck면 앱 시작 후 1회 + 24h 주기로
+	// checkUpdateWithCtx를 호출한다. 발견 시 아래 두 필드(mu 보호)를 채우고 emitHUD로 HUD에
+	// 업데이트 배지를 표시한다. 설치는 App.DownloadAndInstallUpdate를 사용자가 트리거한다.
+	updateAvailable bool   // 새 버전 사용 가능(HUD 배지 표시 트리거).
+	updateVersion   string // 사용 가능한 새 버전 문자열(예 "1.2.3").
+	// autoUpdateReload는 설정 변경(reloadSettings)이 자동확인을 새로 켰을 때 loop를 깨워
+	// 즉시 체크하게 한다(원본: 토글 on 시 스케줄 재개). 버퍼 1 — non-blocking 신호.
+	autoUpdateReload chan struct{}
+
 	// 제어 HUD 상태(hud:update)용 실시간 입력 신호. countingSource(오디오 dispatch
 	// goroutine)가 매 청크마다 갱신하고, runLoop tick과 emitHUD가 읽는다(atomic — 락 불필요).
 	//   level        — 최근 청크 RMS(0~1), math.Float64bits로 인코딩.
@@ -142,16 +152,17 @@ type Controller struct {
 // newController creates a controller with default language/model settings.
 func newController() *Controller {
 	return &Controller{
-		model:      config.GeminiModel,
-		target:     config.DefaultTargetLanguage,
-		source:     config.DefaultSourceLanguage,
-		sel:        audio.Selection{Mode: audio.SelectAuto},
-		status:     "idle",
-		events:     make(chan pipeline.Event, 256),
-		styleCh:    make(chan ipc.StyleMsg, 8),
-		testCh:     make(chan bool, 4),
-		settings:   config.DefaultSettings(),
-		hudVisible: true, // controller 창은 StartHidden:false로 즉시 표시된다.
+		model:            config.GeminiModel,
+		target:           config.DefaultTargetLanguage,
+		source:           config.DefaultSourceLanguage,
+		sel:              audio.Selection{Mode: audio.SelectAuto},
+		status:           "idle",
+		events:           make(chan pipeline.Event, 256),
+		styleCh:          make(chan ipc.StyleMsg, 8),
+		testCh:           make(chan bool, 4),
+		settings:         config.DefaultSettings(),
+		hudVisible:       true, // controller 창은 StartHidden:false로 즉시 표시된다.
+		autoUpdateReload: make(chan struct{}, 1),
 	}
 }
 
@@ -255,6 +266,10 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	}()
 
 	c.initTray()
+
+	// 자동 주기 업데이트 확인(원본 Sparkle 패리티): 앱 시작 후 짧은 지연 뒤 1회 +
+	// 24시간 주기로 확인한다(Settings.Update.AutoCheck가 켜져 있을 때만).
+	go c.autoUpdateLoop()
 
 	if flags.autostart {
 		if err := c.Start(); err != nil {
@@ -396,6 +411,7 @@ func (c *Controller) reloadSettings() {
 	s = normalizeSettings(s)
 
 	c.mu.Lock()
+	prevAutoCheck := c.settings.Update.AutoCheck
 	c.settings = s
 	c.target = s.Language.Target
 	c.source = s.Language.Source
@@ -405,7 +421,14 @@ func (c *Controller) reloadSettings() {
 	cfg := c.providerConfigLocked()
 	sel := c.sel
 	audioCfg := c.settings.Audio
+	newAutoCheck := s.Update.AutoCheck
 	c.mu.Unlock()
+
+	// 자동확인이 새로 켜졌으면(off→on) loop를 깨워 곧바로 한 번 확인한다(원본: 토글 on 시
+	// 스케줄 재개). 꺼졌을 때는 loop가 다음 wake에서 설정을 읽고 스스로 skip하므로 신호 불필요.
+	if newAutoCheck && !prevAutoCheck {
+		c.signalAutoUpdateReload()
+	}
 
 	if running && c.r != nil {
 		c.r.SetProviderConfig(cfg)
@@ -967,6 +990,7 @@ func (c *Controller) SaveSettings(s config.Settings) error {
 	s = normalizeSettings(s)
 
 	c.mu.Lock()
+	prevAutoCheck := c.settings.Update.AutoCheck
 	c.settings = s
 	c.target = s.Language.Target
 	c.source = s.Language.Source
@@ -976,7 +1000,12 @@ func (c *Controller) SaveSettings(s config.Settings) error {
 	cfg := c.providerConfigLocked()
 	sel := c.sel
 	audioCfg := c.settings.Audio
+	newAutoCheck := s.Update.AutoCheck
 	c.mu.Unlock()
+
+	if newAutoCheck && !prevAutoCheck {
+		c.signalAutoUpdateReload()
+	}
 
 	if err := s.Save(); err != nil {
 		return err
@@ -1298,6 +1327,10 @@ type hudPayload struct {
 	TotalUSD          float64 `json:"totalUSD"`
 	Recording         bool    `json:"recording"`
 	IsRunning         bool    `json:"isRunning"`
+	// 자동 업데이트 확인 결과(원본 Sparkle 자동확인 → 업데이트 알림). 자동 체크가 새 버전을
+	// 발견하면 HUD에 클릭 가능한 "업데이트 vX.Y.Z" 배지를 띄운다(클릭 → 설치).
+	UpdateAvailable bool   `json:"updateAvailable"`
+	UpdateVersion   string `json:"updateVersion"`
 }
 
 // buildHUD snapshots the current control-HUD display state. 어느 goroutine에서든
@@ -1310,6 +1343,8 @@ func (c *Controller) buildHUD() hudPayload {
 	sel := c.sel
 	status := c.status
 	keyLoaded := c.apiKeyErr == nil
+	updateAvail := c.updateAvailable
+	updateVer := c.updateVersion
 	c.mu.Unlock()
 
 	// 최근 청크 유무로 무음/정지 시 레벨을 0으로 감쇠한다(원본 clampedLevel: 캡처 중 아니면 0).
@@ -1355,6 +1390,8 @@ func (c *Controller) buildHUD() hudPayload {
 		TotalUSD:          total,
 		Recording:         c.IsRecording(),
 		IsRunning:         running,
+		UpdateAvailable:   updateAvail,
+		UpdateVersion:     updateVer,
 	}
 }
 

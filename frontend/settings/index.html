@@ -727,6 +727,30 @@
         fillSelect($("selOutput"), opts, (S && S.audio && S.audio.outputDeviceID) || "");
       }
 
+      // 자막 "표시 화면" 셀렉트를 실제 모니터 이름으로 채운다(원본 SettingsView와 동일:
+      // "자동 (주 화면)" + 연결된 각 화면의 localizedName). ListScreens()의 index는
+      // overlay.Apply monitorIndex / Position.MonitorIndex와 동일 순서라, 고른 화면에
+      // 오버레이가 정확히 뜬다. 백엔드가 빈 목록을 주면(미지원/열거 실패) "자동"만 남는다.
+      async function populateScreens() {
+        const a = api();
+        let screens = [];
+        try { screens = (a && await a.ListScreens()) || []; } catch (_) {}
+        // 첫 옵션은 원본 문구 "자동 (주 화면)". 값 "auto"는 저장 시 주 화면(index 0)로 매핑.
+        const opts = [["auto", "자동 (주 화면)"]];
+        for (const sc of screens) {
+          const idx = (sc.index != null ? sc.index : sc.Index) || 0;
+          const primary = (sc.primary != null ? sc.primary : sc.Primary);
+          const name = sc.name || sc.Name || ("화면 " + (idx + 1));
+          opts.push([String(idx), name + (primary ? " (주 화면)" : "")]);
+        }
+        // 저장된 monitorIndex에 해당하는 구체 화면을 우선 선택(실제 이름 노출).
+        // 매칭되는 화면이 없으면(목록 비어있음 등) "자동"으로 폴백.
+        const mi = (S && S.position && S.position.monitorIndex) || 0;
+        let sel = String(mi);
+        if (!opts.some(o => o[0] === sel)) sel = "auto";
+        fillSelect($("selScreen"), opts, sel);
+      }
+
       // ---- 세그먼트 헬퍼 ----
       function setSeg(segId, value) {
         document.querySelectorAll("#"+segId+" button").forEach(b =>
@@ -861,8 +885,7 @@
 
         // 자막 — 번역/위치
         fillSelect($("selLang"), LANGS, (S.language && S.language.target) || "ko");
-        const mi = (S.position && S.position.monitorIndex) || 0;
-        fillSelect($("selScreen"), [["0","자동 (주 화면)"],["1","화면 2"],["2","화면 3"]], String(mi));
+        await populateScreens();
         setSeg("segVertical", (S.position && S.position.vertical) || "bottom");
         $("rngVOffset").value = 0.5; // 원본 subtitleVerticalOffset — 백엔드 필드 없음(UI 전용).
         $("tgShowSource").checked = !!(S.language && S.language.showSource);
@@ -925,7 +948,11 @@
           if (!S.language) S.language = {}; S.language.target = $("selLang").value; commit();
         });
         $("selScreen").addEventListener("change", () => {
-          if (!S.position) S.position = {}; S.position.monitorIndex = parseInt($("selScreen").value,10)||0; commit();
+          if (!S.position) S.position = {};
+          const v = $("selScreen").value;
+          // "auto"(자동 (주 화면)) → 주 화면(index 0). 그 외는 화면 인덱스 그대로.
+          S.position.monitorIndex = (v === "auto") ? 0 : (parseInt(v, 10) || 0);
+          commit();
         });
         wireSeg("segVertical", (v) => { if (!S.position) S.position = {}; S.position.vertical = v; commit(); });
         // 세부 위치/캡처 시 표시 — 백엔드 필드 없음(UI 전용, 저장 안 됨).
@@ -939,7 +966,7 @@
           const a = api();
           if (a && a.SetTestSubtitle) { try { a.SetTestSubtitle($("tgTestSub").checked); } catch (_) {} }
         });
-        $("btnRefreshScreens").addEventListener("click", () => { /* 화면 열거 백엔드 없음 */ });
+        $("btnRefreshScreens").addEventListener("click", async () => { await populateScreens(); });
 
         // 자막 스타일
         const sub = () => S.subtitle;

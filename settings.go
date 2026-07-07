@@ -25,6 +25,7 @@ import (
 
 	"cross-livetranslate/internal/audio"
 	"cross-livetranslate/internal/config"
+	"cross-livetranslate/internal/display"
 	"cross-livetranslate/internal/ipc"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -177,6 +178,19 @@ func (s *SettingsAPI) ListOutputDevices() []audio.DeviceInfo {
 // RefreshDevices is a hook for the UI to force device re-enumeration.
 // U1은 열거가 무상태(매 호출 실측)라 별도 캐시 무효화가 필요 없어 no-op이다.
 func (s *SettingsAPI) RefreshDevices() {}
+
+// ListScreens enumerates connected monitors for the 자막 "표시 화면" picker so it
+// can show real display names(예: "Built-in Retina Display") instead of index
+// labels. 반환 Index는 overlay.Apply(monitorIndex) 및 Position.MonitorIndex와
+// 동일한 [NSScreen screens] 순서라, 사용자가 고른 화면에 오버레이가 정확히 뜬다.
+// 열거 실패/미지원 플랫폼이면 빈 목록을 반환한다(프론트는 "자동 (주 화면)"만 표시).
+func (s *SettingsAPI) ListScreens() []display.ScreenInfo {
+	screens, err := display.ListScreens()
+	if err != nil || screens == nil {
+		return []display.ScreenInfo{}
+	}
+	return screens
+}
 
 // Models returns the model catalog (U1: Gemini Live 1개).
 func (s *SettingsAPI) Models() []ModelInfo {

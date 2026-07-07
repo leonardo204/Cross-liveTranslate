@@ -111,6 +111,9 @@ func runController() {
 		OnStartup: func(ctx context.Context) {
 			app.startup(ctx)
 			ctrl.start(ctx, flags)
+		},
+		OnDomReady: func(ctx context.Context) {
+			// 창이 realize된 뒤 배치해야 Wails의 기본(중앙) 초기 배치에 덮어써지지 않는다.
 			positionHUDTopRight(ctx)
 		},
 		OnShutdown: func(ctx context.Context) {

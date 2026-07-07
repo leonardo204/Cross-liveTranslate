@@ -74,6 +74,9 @@ type Controller struct {
 	showSource bool
 	sel        audio.Selection
 	status     string
+	// testSubtitleOn tracks the '테스트 자막 표시'(고정 미리보기) 토글 상태. 설정 파일에
+	// 저장하지 않는 일시 상태이며, 번역 정지 상태에서만 ON 될 수 있다(실자막 보존).
+	testSubtitleOn bool
 
 	// settings is the full persisted user-settings model (Wave 1). 락(mu) 보호.
 	// 변경 바인딩 메서드가 이 값을 갱신하고 즉시 settings.json에 저장한다.
@@ -107,6 +110,10 @@ type Controller struct {
 	// 받으면 reloadSettings로 파일 변경을 반영한다.
 	settingsChild *exec.Cmd
 	settingsStdin io.WriteCloser
+	// settingsWMu serializes writes to settingsStdin (controller → settings control
+	// 채널의 단일 writer 규율). ShowSettings/running 통지가 서로 다른 goroutine에서
+	// 호출될 수 있어 라인 인터리브를 막는다.
+	settingsWMu sync.Mutex
 
 	// hudVisible tracks whether the control-HUD window is currently shown (트레이
 	// "제어 HUD 표시" 체크 표식 + 토글용). 바인딩/트레이 goroutine이 mu 아래 갱신한다.
@@ -124,6 +131,11 @@ type Controller struct {
 	// (stdin 단일 writer 불변식 유지 → 레이스 없음). 버퍼로 non-blocking push.
 	styleCh chan ipc.StyleMsg
 
+	// testCh carries '테스트 자막 표시' 토글 요청(true=on/false=off)을 runLoop로 전달한다.
+	// 미리보기 자막은 자막엔진(runLoop 단독 소유)을 통해 표시되므로, overlay stdin 단일
+	// writer 불변식을 유지하기 위해 반드시 runLoop에서만 엔진을 만진다.
+	testCh chan bool
+
 	closeOnce sync.Once
 }
 
@@ -137,6 +149,7 @@ func newController() *Controller {
 		status:     "idle",
 		events:     make(chan pipeline.Event, 256),
 		styleCh:    make(chan ipc.StyleMsg, 8),
+		testCh:     make(chan bool, 4),
 		settings:   config.DefaultSettings(),
 		hudVisible: true, // controller 창은 StartHidden:false로 즉시 표시된다.
 	}
@@ -317,11 +330,17 @@ func (c *Controller) spawnSettings() {
 	c.settingsStdin = stdin
 	log.Printf("[controller] settings child spawned pid=%d", cmd.Process.Pid)
 
-	// settings 자식의 stdout에서 control("changed")를 읽어 파일 변경을 반영한다.
+	// settings 자식의 stdout에서 control 신호를 읽어 반영한다: "changed"(설정 파일 변경),
+	// "test-subtitle-on/off"('테스트 자막 표시' 토글 → 오버레이 샘플 자막 표시/해제).
 	go ipc.Dispatch(stdout, ipc.Handler{
 		OnControl: func(m ipc.ControlMsg) {
-			if m.Cmd == "changed" {
+			switch m.Cmd {
+			case "changed":
 				c.reloadSettings()
+			case "test-subtitle-on":
+				c.queueTestSubtitle(true)
+			case "test-subtitle-off":
+				c.queueTestSubtitle(false)
 			}
 		},
 	})
@@ -332,13 +351,36 @@ func (c *Controller) spawnSettings() {
 }
 
 // ShowSettings signals the settings child to show its window (트레이 "설정…" /
-// HUD 설정 버튼). settings 자식이 없으면(스폰 실패) no-op이다.
+// HUD 설정 버튼). settings 자식이 없으면(스폰 실패) no-op이다. 창을 띄운 직후 현재 번역
+// 실행 상태를 통지해 '테스트 자막 표시' 토글이 즉시 올바른 활성/비활성으로 표시되게 한다.
 func (c *Controller) ShowSettings() {
 	if c.settingsStdin == nil {
 		return
 	}
-	if err := ipc.WriteControl(c.settingsStdin, ipc.ControlMsg{Cmd: "show"}); err != nil {
-		log.Println("[controller] settings show signal:", err)
+	c.sendSettingsControl("show")
+	c.notifySettingsRunning(c.IsRunning())
+}
+
+// sendSettingsControl writes one control command to the settings child's stdin
+// under settingsWMu (단일 writer 규율). settings 자식이 없으면 no-op이다.
+func (c *Controller) sendSettingsControl(cmd string) {
+	if c.settingsStdin == nil {
+		return
+	}
+	c.settingsWMu.Lock()
+	defer c.settingsWMu.Unlock()
+	if err := ipc.WriteControl(c.settingsStdin, ipc.ControlMsg{Cmd: cmd}); err != nil {
+		log.Println("[controller] settings control:", cmd, err)
+	}
+}
+
+// notifySettingsRunning tells the settings child whether translation is running so
+// its '테스트 자막 표시' 토글 활성/비활성 + 안내 caption을 갱신한다(원본 .disabled(isRunning)).
+func (c *Controller) notifySettingsRunning(running bool) {
+	if running {
+		c.sendSettingsControl("running-on")
+	} else {
+		c.sendSettingsControl("running-off")
 	}
 }
 
@@ -452,6 +494,10 @@ func (c *Controller) runLoop() {
 			maybePush()
 		case sm := <-c.styleCh:
 			c.pushStyle(sm)
+		case on := <-c.testCh:
+			if c.applyTestSubtitle(eng, on) {
+				maybePush()
+			}
 		}
 	}
 }
@@ -477,6 +523,64 @@ func (c *Controller) queueStyle() {
 	case c.styleCh <- msg:
 	default: // 채널이 가득 차면(오버레이 미준비 등) 최신값이 곧 다시 전송되므로 드롭 허용.
 	}
+}
+
+// 테스트 자막(고정 미리보기) 샘플 문구 — 원본 liveTranslate AppState.setTestSubtitle 이식.
+// 번역문은 항상, 원문은 '원문 동시 표시'가 켜졌을 때만 표시된다.
+const (
+	testSubtitleTranslation = "안녕하세요 — 자막 미리보기입니다"
+	testSubtitleSource      = "Hello — subtitle preview"
+)
+
+// queueTestSubtitle hands a '테스트 자막 표시' 토글 요청을 runLoop로 넘긴다(non-blocking).
+// 실제 엔진 조작/오버레이 push는 runLoop 단독(applyTestSubtitle)에서 일어난다.
+func (c *Controller) queueTestSubtitle(on bool) {
+	select {
+	case c.testCh <- on:
+	default: // 채널이 가득 차면(드묾) 최신 토글이 곧 다시 전달되므로 드롭 허용.
+	}
+}
+
+// applyTestSubtitle applies a test-subtitle(고정 미리보기) toggle to the engine.
+// runLoop 단독 호출(엔진 단일 owner). 반환값 true면 호출자가 오버레이로 push 해야 한다.
+//
+//   - on=true: 번역 중이 아니면 샘플 자막을 고정 표시(원문 동시 표시 시 원문도). 번역 중이면
+//     실자막을 덮어쓰지 않도록 무시한다(원본 setTestSubtitle의 !isRunning 가드 이식).
+//   - on=false: 미리보기를 숨긴다(hidePreview → reset). 미리보기가 켜져 있던 경우에만
+//     엔진을 리셋하므로(테스트 자막이 꺼진 상태에서의 off는 no-op), 진행 중 실자막을
+//     건드리지 않는다. 번역 시작(Start) 시 남아 있던 미리보기를 안전하게 청소하는 경로이기도
+//     하다(그 시점엔 아직 실자막이 없다).
+func (c *Controller) applyTestSubtitle(eng *subtitle.Engine, on bool) bool {
+	if on {
+		c.mu.Lock()
+		running := c.running
+		showSrc := c.showSource
+		if running {
+			// 번역 중 — 실자막 우선(미리보기 무시). 상태는 off로 유지한다.
+			c.testSubtitleOn = false
+			c.mu.Unlock()
+			return false
+		}
+		c.testSubtitleOn = true
+		c.mu.Unlock()
+		src := ""
+		if showSrc {
+			src = testSubtitleSource
+		}
+		eng.ShowPreview(testSubtitleTranslation, src)
+		return true
+	}
+
+	// off — 미리보기가 켜져 있던 경우에만 리셋(그 외엔 no-op → 실자막 보존).
+	c.mu.Lock()
+	wasOn := c.testSubtitleOn
+	c.testSubtitleOn = false
+	c.mu.Unlock()
+	if !wasOn {
+		return false
+	}
+	eng.HidePreview()
+	return true
 }
 
 // styleMsgFromSettings maps persisted subtitle-style + position settings into an
@@ -721,6 +825,11 @@ func (c *Controller) Start() error {
 	c.mu.Unlock()
 
 	c.r.SetDesired(d)
+	// 테스트 자막(고정 미리보기)이 켜져 있으면 끈다 — 실제 자막이 우선(원본 AppState.start 이식).
+	// running이 이미 true라 새 미리보기 요청은 무시되고, 남아 있던 미리보기 엔진 상태만 청소된다.
+	c.queueTestSubtitle(false)
+	// 설정 창의 '테스트 자막 표시' 토글을 비활성으로 갱신하도록 실행 상태를 통지한다.
+	c.notifySettingsRunning(true)
 	// 비용(A Wave3): 새 세션이므로 세션 비용을 0에서 시작한다(누적은 유지). HUD를 즉시 갱신.
 	if c.estimator != nil {
 		c.estimator.ResetSession()
@@ -742,6 +851,8 @@ func (c *Controller) Stop() error {
 	if c.r != nil {
 		c.r.SetRunning(false)
 	}
+	// 설정 창의 '테스트 자막 표시' 토글을 다시 활성화하도록 정지 상태를 통지한다.
+	c.notifySettingsRunning(false)
 	// 재생 정지 + 원음 볼륨 복원(running=false).
 	c.applyAudioPolicy(audioCfg, false)
 	// 비용(A Wave3): 세션 종료 시 누적 비용을 영속화한다.

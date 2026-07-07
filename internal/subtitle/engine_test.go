@@ -356,6 +356,55 @@ func TestReset(t *testing.T) {
 	}
 }
 
+// --- 테스트 자막(고정 미리보기) ---
+
+func TestShowPreviewFixed(t *testing.T) {
+	e := New()
+	e.ShowPreview("안녕하세요 — 자막 미리보기입니다", "Hello — subtitle preview")
+
+	if !e.Visible() {
+		t.Fatal("preview should be visible")
+	}
+	if got, want := e.DisplayTranslation(), "안녕하세요 — 자막 미리보기입니다"; got != want {
+		t.Fatalf("DisplayTranslation = %q, want %q", got, want)
+	}
+	if got, want := e.DisplaySource(), "Hello — subtitle preview"; got != want {
+		t.Fatalf("DisplaySource = %q, want %q", got, want)
+	}
+
+	// 고정 표시: 무음 정리 타임아웃을 한참 넘겨도 사라지지 않는다(타이머/활동 추적 비활성).
+	t0 := time.Unix(1000, 0)
+	e.Heartbeat(t0)
+	e.Heartbeat(t0.Add(60 * time.Second))
+	if !e.Visible() {
+		t.Fatal("fixed preview must survive silence clear timeout")
+	}
+	if e.DisplayTranslation() == "" {
+		t.Fatal("fixed preview text must persist across heartbeats")
+	}
+}
+
+func TestPreviewWithoutSource(t *testing.T) {
+	e := New()
+	e.ShowPreview("안녕하세요 — 자막 미리보기입니다", "")
+	if e.DisplaySource() != "" {
+		t.Fatalf("source should be empty when preview source is empty, got %q", e.DisplaySource())
+	}
+	if !e.Visible() || e.DisplayTranslation() == "" {
+		t.Fatal("translation-only preview should still be visible")
+	}
+}
+
+func TestHidePreviewClears(t *testing.T) {
+	e := New()
+	e.ShowPreview("안녕하세요 — 자막 미리보기입니다", "Hello — subtitle preview")
+	e.HidePreview()
+	if e.Visible() || e.DisplayTranslation() != "" || e.DisplaySource() != "" {
+		t.Fatalf("HidePreview must fully clear: visible=%v dt=%q ds=%q",
+			e.Visible(), e.DisplayTranslation(), e.DisplaySource())
+	}
+}
+
 // --- 결정성: 같은 입력 → 같은 출력 ---
 
 func TestDeterminism(t *testing.T) {

@@ -63,9 +63,12 @@ type StyleMsg struct {
 }
 
 // ControlMsg carries a process-control command over the same NDJSON stream
-// used for subtitles/styles. Cmd is one of: "show"|"hide"|"quit"(controller →
-// settings child) 또는 "changed"(settings child → controller, 설정 파일이 변경되어
-// controller가 reload+반영해야 함을 알린다).
+// used for subtitles/styles. Cmd is one of:
+//   - controller → settings child: "show"|"hide"|"quit",
+//     "running-on"|"running-off"(번역 실행 상태 통지 — '테스트 자막 표시' 토글 활성/비활성용).
+//   - settings child → controller: "changed"(설정 파일 변경 → reload+반영),
+//     "test-subtitle-on"|"test-subtitle-off"('테스트 자막 표시' 토글 — 번역 정지 상태에서
+//     오버레이에 샘플 자막을 고정 표시/해제).
 type ControlMsg struct {
 	Cmd string `json:"cmd"`
 }

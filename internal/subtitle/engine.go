@@ -216,6 +216,29 @@ func (e *Engine) Heartbeat(now time.Time) {
 	}
 }
 
+// ShowPreview 는 '테스트 자막 표시' 토글 ON 시(번역 정지 상태) 샘플 자막을 페이드/타이머
+// 없이 고정 표시한다(원본 SubtitleEngine.showPreview 이식). current/confirmed를 동일 텍스트로
+// 채워 어느 표시 경로에서도 빈 버퍼로 자막이 사라지지 않게 하고, 무음 추적을 비활성화
+// (hasActivity=false, lastActivity=zero)해 Heartbeat가 자동 확정/화면 정리를 하지 않게 한다.
+// source가 빈 문자열이면 원문 줄은 표시되지 않는다(원문 동시 표시가 꺼진 경우).
+func (e *Engine) ShowPreview(translation, source string) {
+	e.currentTranslation = translation
+	e.currentSource = source
+	e.confirmedTranslation = translation
+	e.confirmedSource = source
+	e.rollupLines = nil
+	e.segmentMode = false
+	e.pendingGenerationReset = false
+	e.visible = true
+	e.lastActivity = time.Time{}
+	e.hasActivity = false
+	e.sawActivity = false
+}
+
+// HidePreview 는 '테스트 자막 표시' 토글 OFF 시 미리보기를 비우고 즉시 숨긴다
+// (원본 SubtitleEngine.hidePreview → reset 경로 이식).
+func (e *Engine) HidePreview() { e.Reset() }
+
 // Reset 은 세션 정지/재시작 시 모든 누적 텍스트와 상태를 비우고 즉시 숨긴다.
 func (e *Engine) Reset() {
 	e.currentTranslation = ""

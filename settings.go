@@ -20,6 +20,7 @@ package main
 import (
 	"context"
 	"os"
+	"sync"
 	"time"
 
 	"cross-livetranslate/internal/audio"
@@ -50,9 +51,11 @@ type PermissionInfo struct {
 // 완전한 바인딩 계약을 정의한다. 파이프라인은 소유하지 않으며(그것은 controller),
 // 설정 파일 Load/Save + API 키 + 디바이스/모델/버전 조회만 담당한다.
 type SettingsAPI struct {
-	ctx context.Context
-	app *App     // 버전/업데이트 위임용(App도 이 프로세스에 바인드됨).
-	out *os.File // controller가 읽는 제어 채널(stdout). "changed" 신호 송신.
+	ctx  context.Context
+	app  *App       // 버전/업데이트 위임용(App도 이 프로세스에 바인드됨).
+	out  *os.File   // controller가 읽는 제어 채널(stdout). control 신호 송신.
+	outM sync.Mutex // out(stdout) 단일 writer 규율 — 바인딩 메서드들이 서로 다른 goroutine에서
+	// 호출될 수 있어 control 라인의 인터리브를 막는다.
 }
 
 // newSettingsAPI creates the settings-window binding backed by stdout control.
@@ -67,10 +70,30 @@ func (s *SettingsAPI) setCtx(ctx context.Context) { s.ctx = ctx }
 // it reloads + applies (provider/selection/audio/style). Best-effort(로그 없음 —
 // controller가 죽었으면 stdout write가 실패해도 무해).
 func (s *SettingsAPI) notifyChanged() {
+	s.sendControl("changed")
+}
+
+// sendControl writes one control command to the controller (stdout) under outM
+// (단일 writer 규율). Best-effort — controller가 죽었으면 write 실패해도 무해.
+func (s *SettingsAPI) sendControl(cmd string) {
 	if s.out == nil {
 		return
 	}
-	_ = ipc.WriteControl(s.out, ipc.ControlMsg{Cmd: "changed"})
+	s.outM.Lock()
+	defer s.outM.Unlock()
+	_ = ipc.WriteControl(s.out, ipc.ControlMsg{Cmd: cmd})
+}
+
+// SetTestSubtitle toggles the '테스트 자막 표시'(고정 미리보기) preview. 설정 파일에
+// 저장하지 않는 일시 상태이며(앱 재시작 시 off), controller에 test-subtitle-on/off control을
+// 보내 오버레이에 샘플 자막을 표시/해제하게 한다. 실제 표시 여부(번역 중이면 무시)는
+// controller가 판정한다(원본 AppState.setTestSubtitle의 !isRunning 가드 이식).
+func (s *SettingsAPI) SetTestSubtitle(on bool) {
+	if on {
+		s.sendControl("test-subtitle-on")
+	} else {
+		s.sendControl("test-subtitle-off")
+	}
 }
 
 // -----------------------------------------------------------------------------
@@ -217,6 +240,12 @@ func runSettingsControlLoop(ctx context.Context) {
 				wruntime.WindowHide(ctx)
 			case "quit":
 				wruntime.Quit(ctx)
+			case "running-on":
+				// 번역 실행 중 — '테스트 자막 표시' 토글을 비활성화하도록 프론트에 통지.
+				wruntime.EventsEmit(ctx, "running:update", true)
+			case "running-off":
+				// 번역 정지 — '테스트 자막 표시' 토글을 다시 활성화하도록 프론트에 통지.
+				wruntime.EventsEmit(ctx, "running:update", false)
 			}
 		},
 	})

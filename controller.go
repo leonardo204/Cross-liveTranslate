@@ -161,7 +161,7 @@ func newController() *Controller {
 		styleCh:          make(chan ipc.StyleMsg, 8),
 		testCh:           make(chan bool, 4),
 		settings:         config.DefaultSettings(),
-		hudVisible:       true, // controller 창은 StartHidden:false로 즉시 표시된다.
+		hudVisible:       false, // 원본과 동일하게 HUD는 시작 시 숨김(StartHidden:true). 트레이/캡처로 표시.
 		autoUpdateReload: make(chan struct{}, 1),
 	}
 }
@@ -802,7 +802,10 @@ func (c *Controller) initTray() {
 	}
 	tray.SetStatus(c.Status())
 	tray.SetRunning(c.IsRunning())
-	tray.SetHUDVisible(true)
+	c.mu.Lock()
+	vis := c.hudVisible
+	c.mu.Unlock()
+	tray.SetHUDVisible(vis)
 }
 
 // toggleHUD shows/hides the control-HUD window (트레이 "제어 HUD 표시").

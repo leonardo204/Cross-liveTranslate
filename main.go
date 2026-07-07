@@ -94,10 +94,13 @@ func runController() {
 		Title:            "Cross-liveTranslate",
 		Width:            hudWidth,
 		Height:           hudHeight,
-		Frameless:        true,
-		AlwaysOnTop:      true,
-		StartHidden:      false,
-		BackgroundColour: &options.RGBA{R: 0, G: 0, B: 0, A: 0},
+		Frameless:   true,
+		AlwaysOnTop: true,
+		// 원본 HUDController.isVisible=false — 앱 시작 시 제어 HUD는 숨김 상태이며,
+		// 트레이 "제어 HUD 표시" 또는 캡처 시작(자동 표시)으로 띄운다. 트레이 체크 상태와 일치.
+		StartHidden:      true,
+		HideWindowOnClose: true,
+		BackgroundColour:  &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		AssetServer: &assetserver.Options{
 			Assets: subFS("controller"),
 		},
@@ -177,6 +180,9 @@ func runSettings() {
 		MaxHeight:     580,
 		DisableResize: true,
 		StartHidden:   true,
+		// 원본 SettingsWindowController: isReleasedWhenClosed=false — 닫기(X) 시 창을
+		// 파괴/종료하지 않고 숨기기만 해야 트레이/HUD에서 다시 열 수 있다.
+		HideWindowOnClose: true,
 		AssetServer: &assetserver.Options{
 			Assets: subFS("settings"),
 		},

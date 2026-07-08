@@ -87,14 +87,16 @@ func Apply(title string, monitorIndex int) error {
 		return fmt.Errorf("overlay: no window with class %q", WindowClassName)
 	}
 
-	// Merge overlay extended styles: layered (transparency), transparent
-	// (click-through), tool-window (no taskbar button / alt-tab entry).
+	// Merge overlay extended styles: transparent (click-through 입력 통과),
+	// tool-window (no taskbar button / alt-tab entry).
+	//
+	// 투명도는 Wails의 WindowIsTranslucent(DWM 컴포지션) + WebviewIsTransparent에 맡긴다.
+	// 과거엔 여기서 WS_EX_LAYERED + SetLayeredWindowAttributes(LWA_ALPHA,255)로 레이어드
+	// 창을 만들었는데, LWA_ALPHA 255는 창 전체를 **불투명**으로 강제해 오버레이가 화면을
+	// 까맣게 덮었다(Windows 실측 버그). 레이어드/불투명 강제를 제거해 DWM 투명이 살아나게 한다.
 	exStyle, _, _ := procGetWindowLongPtrW.Call(hwnd, uintptr(gwlExStyle))
-	exStyle |= wsExLayered | wsExTransparent | wsExToolWindow
+	exStyle |= wsExTransparent | wsExToolWindow
 	procSetWindowLongPtrW.Call(hwnd, uintptr(gwlExStyle), exStyle)
-
-	// Fully opaque alpha channel; per-pixel transparency comes from WebView2.
-	procSetLayeredWindowAttr.Call(hwnd, 0, 255, 0x02 /* LWA_ALPHA */)
 
 	// Position: cover the requested monitor if we can enumerate it.
 	rects := enumMonitors()

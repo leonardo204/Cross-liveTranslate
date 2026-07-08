@@ -1052,7 +1052,9 @@
         // 권한
         $("btnRefreshPerm").addEventListener("click", refreshPermissions);
         $("linkMic").addEventListener("click", () => a().OpenSystemSettings("microphone"));
-        $("linkSys").addEventListener("click", () => a().OpenSystemSettings("screencapture"));
+        // 시스템 오디오(Core Audio Process Tap)는 화면녹화가 아닌 오디오 캡처 권한을 쓴다.
+        // 화면기록 pane은 오해 소지가 있어 오디오 권한(마이크) pane으로 안내한다.
+        $("linkSys").addEventListener("click", () => a().OpenSystemSettings("microphone"));
 
         // API 키
         $("inKey").addEventListener("input", () => { testState = "idle"; testMsg = ""; $("keyMsg").textContent = ""; renderTestStatus(); renderKeyButtons(); });

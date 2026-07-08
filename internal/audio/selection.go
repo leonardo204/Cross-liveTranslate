@@ -64,6 +64,11 @@ var ErrLoopbackUnsupported = errors.New("audio: loopback capture not supported o
 // ErrNoDeviceID is returned when SelectDevice is requested without a DeviceID.
 var ErrNoDeviceID = errors.New("audio: SelectDevice requires a non-empty DeviceID")
 
+// ErrSystemTapPermission is returned when the macOS system-audio tap fails to
+// start because the audio-capture permission is missing/denied. 상위(controller)가
+// 이 에러를 인지해 HUD에 "시스템 오디오 권한 필요"를 명확히 표면화한다(무한 오류 대신).
+var ErrSystemTapPermission = errors.New("audio: 시스템 오디오 캡처 권한이 필요합니다 — 설정에서 허용하세요")
+
 // looksLikeLoopback estimates whether a device name denotes a virtual loopback
 // input (BlackHole/Loopback/Soundflower, or an aggregate+virtual pairing).
 // 원본 이식: AudioDevice.swift `isLikelyLoopback`.

@@ -114,7 +114,8 @@ func (s *SystemTapSource) Start(ctx context.Context, onChunk func(Chunk)) error 
 			return ErrSystemTapUnavailable
 		}
 		if C.lt_systemtap_last_error_was_permission() != 0 {
-			return fmt.Errorf("audio: system tap start failed (마이크/오디오 캡처 권한 필요?): code %d", int(rc))
+			// 권한 실패는 sentinel로 감싸 controller가 HUD에 명확히 안내하게 한다.
+			return fmt.Errorf("%w (code %d)", ErrSystemTapPermission, int(rc))
 		}
 		return fmt.Errorf("audio: system tap start failed: code %d", int(rc))
 	}

@@ -18,6 +18,7 @@ import (
 	"embed"
 	"flag"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -39,6 +40,10 @@ import (
 
 //go:embed all:frontend
 var assets embed.FS
+
+// logVerbose gates high-frequency 진단 로그(자막 push 등). 기본 off — 라이프사이클
+// 로그(권한/연결/첫 청크/영구실패)는 항상 남기고, 프레임 단위 로그는 CLT_VERBOSE=1일 때만.
+var logVerbose = os.Getenv("CLT_VERBOSE") == "1"
 
 // init forces Go's pure-Go DNS resolver instead of the macOS cgo resolver
 // (getaddrinfo). 근본 버그 수정: 번역 시작 시 malgo(CoreAudio) 오디오 초기화와 gemini
@@ -62,6 +67,9 @@ func main() {
 	role := "controller"
 	fset := flag.NewFlagSet("cross-livetranslate", flag.ContinueOnError)
 	fset.StringVar(&role, "role", "controller", "process role: controller | settings | overlay")
+	// Foreign flags(-autostart/-target/-input 등, parseControllerFlags가 처리)로 인한
+	// "flag provided but not defined" 노이즈를 stderr에 찍지 않는다. role만 취하면 된다.
+	fset.SetOutput(io.Discard)
 	// Ignore parse errors from foreign flags; role keeps its default/value.
 	_ = fset.Parse(os.Args[1:])
 

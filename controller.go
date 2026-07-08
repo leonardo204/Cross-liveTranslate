@@ -508,8 +508,8 @@ func (c *Controller) runLoop() {
 		}
 		lastSig = sig
 		// 진단: 오버레이로 보내는 가시 자막을 로그로 남긴다(오버레이에 안 뜰 때 controller가
-		// 실제로 자막을 push 하는지 확인). 대량 방지 위해 가시+비어있지 않을 때만.
-		if msg.Visible && len(msg.Lines) > 0 {
+		// 실제로 자막을 push 하는지 확인). 프레임 단위 고빈도라 CLT_VERBOSE=1일 때만.
+		if logVerbose && msg.Visible && len(msg.Lines) > 0 {
 			log.Printf("[controller] 오버레이 push: visible=%v lines=%d %q",
 				msg.Visible, len(msg.Lines), truncRunes(strings.Join(msg.Lines, " / "), 60))
 		}
@@ -690,7 +690,15 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 		// 영구 실패의 실제 원인을 반드시 로그로 남긴다(API 키/네트워크/모델 권한 등). 지금까지
 		// 이 에러가 버려져 "연결 중…"의 원인을 추적할 수 없었다.
 		log.Printf("[controller] gemini 영구 실패: %v", ev.Err)
-		c.setStatus("failed")
+		// 시스템 오디오 캡처 권한 실패는 HUD에 명확한 안내를 띄운다(무의미한 "오류" 대신).
+		switch {
+		case errors.Is(ev.Err, audio.ErrSystemTapPermission):
+			c.setStatus("system-audio-permission")
+		case errors.Is(ev.Err, audio.ErrLoopbackUnsupported):
+			c.setStatus("loopback-unsupported")
+		default:
+			c.setStatus("failed")
+		}
 		c.mu.Lock()
 		c.running = false
 		audioCfg := c.settings.Audio
@@ -1504,6 +1512,10 @@ func geminiStatusText(status string, keyLoaded bool) string {
 	switch {
 	case status == "mic-permission":
 		return "마이크 권한 필요 — 설정에서 허용"
+	case status == "system-audio-permission":
+		return "시스템 오디오 권한 필요 — 설정에서 허용"
+	case status == "loopback-unsupported":
+		return "시스템 오디오 캡처 미지원 — 마이크 입력을 쓰거나 macOS 14.4+ 필요"
 	case strings.Contains(status, "ready"):
 		return "번역 중"
 	case strings.Contains(status, "connecting"), status == "starting":

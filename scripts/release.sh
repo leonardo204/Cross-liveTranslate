@@ -91,6 +91,18 @@ APP_PATH=$(ls -d "$BIN"/*.app 2>/dev/null | head -1) || true
 APP_NAME="$(basename "$APP_PATH")"
 log "[build] 산출물 탐지: $APP_NAME"
 
+# Info.plist 버전 주입(서명 전 — 서명 후 수정하면 서명이 깨진다). wails.json의
+# productVersion은 고정 dev값이라, About/Finder 표시가 릴리스 버전과 일치하도록 덮어쓴다.
+# (updater 비교는 ldflags main.appVersion을 쓰므로 이와 독립적이다.)
+PLIST="$APP_PATH/Contents/Info.plist"
+if [[ -f "$PLIST" ]]; then
+  /usr/libexec/PlistBuddy -c "Set :CFBundleShortVersionString ${VERSION}" "$PLIST" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :CFBundleShortVersionString string ${VERSION}" "$PLIST" 2>/dev/null || true
+  /usr/libexec/PlistBuddy -c "Set :CFBundleVersion ${VERSION}" "$PLIST" 2>/dev/null \
+    || /usr/libexec/PlistBuddy -c "Add :CFBundleVersion string ${VERSION}" "$PLIST" 2>/dev/null || true
+  log "[build] Info.plist 버전 주입: ${VERSION}"
+fi
+
 # ── 2. codesign ────────────────────────────────────────────────────────────
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   log "[codesign] $APPLE_SIGNING_IDENTITY"

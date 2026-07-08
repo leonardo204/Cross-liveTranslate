@@ -24,9 +24,11 @@ var appVersion = "0.1.0-dev"
 // updaterEndpoint is the URL of the latest.json manifest on GitHub Releases.
 var updaterEndpoint = "https://github.com/leonardo204/Cross-liveTranslate/releases/latest/download/latest.json"
 
-// updaterPubKey is the Tauri-compatible base64-encoded minisign public key.
-// Copied verbatim from confUploader — the same key pair signs this project.
-var updaterPubKey = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDhEMDgwMDk5NjY2ODAyQzkKUldUSkFtaG1tUUFJalhXbG1JQmhuU0l1Z2FHSFFMT3NHcndzRklDU2ljWjhkMzBmQmVUUUdnMXIK"
+// updaterPubKey is the base64-wrapped minisign public key(키 ID 7FD33D7101545F02).
+// Cross-liveTranslate 전용 키(무암호 표준 minisign)로, 릴리스 파이프라인(scripts/release.sh)이
+// 대응 개인키(~/.tauri/cross-livetranslate.key)로 서명한다. ParsePublicKey가 base64 한 겹을
+// 풀면 "untrusted comment:...\n<base64 keyblock>" minisign 공개키 텍스트가 나온다.
+var updaterPubKey = "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXkgN0ZEMzNENzEwMTU0NUYwMgpSV1FDWDFRQmNUM1RmM3I0STg1bTZDTklEcTkvR0dwSFVJMHhuemQrTmNKa0VKWG03WDVJR1RmZwo="
 
 // package-level pending update state — avoids modifying App struct in app.go.
 var (

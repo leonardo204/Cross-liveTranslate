@@ -24,11 +24,10 @@ if [[ -f .env ]]; then
   set +a
 fi
 
-# ── MINISIGN_PASSWORD 결정 ─────────────────────────────────────────────────
-# Tauri 키(.tauri/flipmd.key)는 **빈 string**이 비밀번호.
-# ${VAR+set} 으로 unset 여부 검사 — 빈 string("")도 유효한 값으로 수용.
-export MINISIGN_SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.tauri/flipmd.key}"
-export MINISIGN_PASSWORD="${MINISIGN_PASSWORD:-}"   # 미설정이면 빈 string 기본값
+# ── minisign 개인키 경로 ───────────────────────────────────────────────────
+# Cross-liveTranslate 전용 무암호 minisign 키(표준 minisign, tauri 의존 없음).
+# .env의 MINISIGN_SECRET_KEY로 오버라이드 가능(CI는 시크릿에서 파일로 복원 후 지정).
+export MINISIGN_SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.tauri/cross-livetranslate.key}"
 
 # ── 기본값 설정 ────────────────────────────────────────────────────────────
 export APPLE_NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-CROSS_LIVETRANSLATE_NOTARY}"

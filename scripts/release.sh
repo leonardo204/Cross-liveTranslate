@@ -23,30 +23,21 @@ log()  { printf "\033[1;36m▸\033[0m %s\n" "$*"; }
 warn() { printf "\033[1;33m⚠\033[0m %s\n" "$*" >&2; }
 die()  { printf "\033[1;31m✗\033[0m %s\n" "$*" >&2; exit 1; }
 
-# Tauri 시절 생성한 키는 base64로 한 번 더 wrap된 rsign 형식이라 표준
-# minisign / rsign2 CLI에서 못 읽는다. Tauri CLI signer만 이 형식을 처리.
+# 서명: Cross-liveTranslate 전용 minisign 키(무암호 표준 minisign, ~/.tauri/cross-livetranslate.key).
+# 표준 `minisign` CLI로 서명한다(tauri CLI 의존 제거). MINISIGN_SECRET_KEY로 경로 오버라이드.
 #
-# 산출물 `<file>.sig`는 base64(minisign텍스트) = 1중 wrap.
-# latest.json signature에 **그대로** 넣어야 한다 (추가 base64 인코딩 금지).
-# verify.go가 base64 한 단계를 풀면 minisign 텍스트가 나오기 때문.
-# (이중 wrap → "signature 본문이 너무 짧습니다" 검증 실패 — flipMd-Go 함정 6 참고)
-TAURI_CLI_DIR="${TAURI_CLI_DIR:-/Users/zerolive/work/flipbookMaker}"
-
+# latest.json의 signature 값은 **base64(minisign 서명파일 내용)** = 1중 wrap 이어야 한다.
+# verify.go(updater)가 base64 한 겹을 풀면 minisign 서명 텍스트가 나오기 때문이다.
+# 따라서 minisign이 낸 .minisig(raw 텍스트)를 base64로 한 번 감싸 latest.json에 넣는다.
 sign_minisign() {
   local file="$1"
-  [[ -d "$TAURI_CLI_DIR/node_modules/@tauri-apps/cli" ]] || \
-    die "tauri CLI signer를 못 찾음: $TAURI_CLI_DIR (TAURI_CLI_DIR로 경로 지정)"
-  local out
-  out=$(
-    cd "$TAURI_CLI_DIR" && \
-    npx tauri signer sign \
-      -f "$MINISIGN_SECRET_KEY" \
-      -p "${MINISIGN_PASSWORD:-}" \
-      "$file" 2>&1
-  ) || die "tauri signer 서명 실패: $file
-$out"
-  [[ -f "${file}.sig" ]] || die "${file}.sig 생성 실패"
-  mv "${file}.sig" "${file}.minisig"
+  command -v minisign >/dev/null 2>&1 || die "minisign CLI가 없습니다 (brew install minisign)"
+  [[ -f "$MINISIGN_SECRET_KEY" ]] || die "minisign 개인키를 못 찾음: $MINISIGN_SECRET_KEY"
+  rm -f "${file}.minisig"
+  # 무암호 키라 비대화식. -x로 출력 경로 지정. 실패 시 에러 표면화.
+  minisign -S -s "$MINISIGN_SECRET_KEY" -m "$file" -x "${file}.minisig" >/dev/null 2>&1 \
+    || die "minisign 서명 실패: $file"
+  [[ -f "${file}.minisig" ]] || die "${file}.minisig 생성 실패"
 }
 
 # ── 인자 파싱 ───────────────────────────────────────────────────────────────
@@ -86,8 +77,11 @@ mkdir -p "$DIST"
 # ── 1. wails build darwin/universal ───────────────────────────────────────
 log "[build] wails build darwin/universal (ldflags appVersion=${VERSION})"
 rm -rf "$BIN"
+# -tags netgo: 순수 Go DNS 리졸버 강제. malgo(CoreAudio) 초기화와 cgo DNS 조회가
+# 동시에 돌면 macOS에서 SIGSEGV로 급종료되므로 cgo DNS를 제거한다(배포본 필수).
 PATH="$PATH_WITH_GO" wails build \
   -platform darwin/universal \
+  -tags netgo \
   -ldflags "-X main.appVersion=${VERSION}"
 
 # build/bin/*.app 자동 탐지
@@ -100,7 +94,11 @@ log "[build] 산출물 탐지: $APP_NAME"
 # ── 2. codesign ────────────────────────────────────────────────────────────
 if [[ -n "${APPLE_SIGNING_IDENTITY:-}" ]]; then
   log "[codesign] $APPLE_SIGNING_IDENTITY"
+  # entitlements: 마이크/시스템오디오 입력(audio-input) + WKWebView JIT(allow-jit).
+  # 하드닝 런타임(--options runtime)에서 이 권한이 없으면 웹뷰 크래시/캡처 실패가 난다.
+  ENTITLEMENTS="build/darwin/entitlements.plist"
   codesign --deep --force --options runtime --timestamp \
+    --entitlements "$ENTITLEMENTS" \
     --sign "$APPLE_SIGNING_IDENTITY" "$APP_PATH" >/dev/null
   log "[codesign] 완료"
 else
@@ -127,7 +125,8 @@ if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
     log "[staple] xcrun stapler staple"
     xcrun stapler staple "$DMG_PATH" >/dev/null || die "stapler staple 실패"
     log "[staple] 완료"
-    /usr/sbin/spctl -a -vv --type install "$DMG_PATH" 2>&1 | head -3 || true
+    # staple 티켓 유효성 확인(DMG에 spctl --type install은 오검출이므로 stapler validate 사용).
+    xcrun stapler validate "$DMG_PATH" 2>&1 | tail -1 || true
   else
     die "notarization 실패. xcrun notarytool log <submission-id> --keychain-profile $APPLE_NOTARY_PROFILE 로 사유 확인"
   fi
@@ -135,12 +134,13 @@ else
   warn "APPLE_NOTARY_PROFILE 미설정 — notarize/staple 스킵 (Gatekeeper 경고 발생 가능)"
 fi
 
-# ── 5. minisign 서명 (tauri signer) ────────────────────────────────────────
-log "[sign] tauri signer → ${DMG_NAME}.minisig"
+# ── 5. minisign 서명 (표준 minisign) ────────────────────────────────────────
+log "[sign] minisign → ${DMG_NAME}.minisig"
 sign_minisign "$DMG_PATH"
 
-# .minisig 내용 그대로 읽음 — 추가 base64 인코딩 금지 (이중 wrap → 검증 실패)
-SIG=$(tr -d '\n' < "${DMG_PATH}.minisig")
+# latest.json signature = base64(minisign 서명파일 내용). verify.go가 base64 한 겹을 풀어
+# minisign 텍스트를 얻는다. minisig(raw 텍스트)를 base64로 한 번 감싼다.
+SIG=$(base64 < "${DMG_PATH}.minisig" | tr -d '\n')
 [[ -n "$SIG" ]] || die ".minisig 내용이 비어있습니다"
 log "[sign] 서명 완료"
 

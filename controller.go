@@ -179,6 +179,7 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	// 이미 결정된(허용/거부) 상태면 시스템이 다이얼로그를 띄우지 않으므로 항상 호출해도 안전.
 	// (ad-hoc 서명 개발 빌드는 재빌드 시 코드 해시가 바뀌어 TCC가 새 앱으로 인식 → 권한이
 	//  초기화될 수 있다. 이는 개발 워크플로 한계이며 근본 해결은 안정적 서명(별도 작업).)
+	log.Printf("[controller] 마이크 권한 상태(시작 시)=%v — 미요청이면 다이얼로그 요청", permission.MicrophoneStatus())
 	permission.RequestMicrophone()
 
 	// 설정을 먼저 로드해 적용한다(Wave 1). 실패해도 기본값으로 HUD는 뜬다.
@@ -506,6 +507,12 @@ func (c *Controller) runLoop() {
 			return
 		}
 		lastSig = sig
+		// 진단: 오버레이로 보내는 가시 자막을 로그로 남긴다(오버레이에 안 뜰 때 controller가
+		// 실제로 자막을 push 하는지 확인). 대량 방지 위해 가시+비어있지 않을 때만.
+		if msg.Visible && len(msg.Lines) > 0 {
+			log.Printf("[controller] 오버레이 push: visible=%v lines=%d %q",
+				msg.Visible, len(msg.Lines), truncRunes(strings.Join(msg.Lines, " / "), 60))
+		}
 		c.pushSubtitle(msg)
 	}
 
@@ -651,6 +658,11 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 		eng.IngestSourceDelta(ev.Text)
 	case pipeline.TurnComplete:
 		eng.TurnComplete()
+		// 진단: 한 발화(turn)의 번역 결과를 로그로 남긴다. 자막이 화면에 안 뜰 때
+		// Gemini가 번역을 반환하는지(=오디오가 실제로 전달되는지) 확인하는 근거.
+		if t := strings.TrimSpace(eng.DisplayTranslation()); t != "" {
+			log.Printf("[controller] 번역 자막(turn 완료): %q", truncRunes(t, 80))
+		}
 	case pipeline.GenerationComplete:
 		eng.GenerationComplete()
 	case pipeline.Interrupted:
@@ -666,8 +678,18 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 			c.player.Enqueue(ev.AudioPCM)
 		}
 	case pipeline.State:
+		// 상태 전이의 실제 에러 원문을 로그로 남긴다(그렇지 않으면 "연결 중…"에서 왜 멈췄는지
+		// 알 수 없다). 에러가 있으면 함께 기록한다(예: "연결 끊김 — 재연결 중").
+		if ev.Err != nil {
+			log.Printf("[controller] gemini state=%s: %v", ev.State.String(), ev.Err)
+		} else {
+			log.Printf("[controller] gemini state=%s", ev.State.String())
+		}
 		c.setStatus("state: " + ev.State.String())
 	case pipeline.PermanentFailure:
+		// 영구 실패의 실제 원인을 반드시 로그로 남긴다(API 키/네트워크/모델 권한 등). 지금까지
+		// 이 에러가 버려져 "연결 중…"의 원인을 추적할 수 없었다.
+		log.Printf("[controller] gemini 영구 실패: %v", ev.Err)
 		c.setStatus("failed")
 		c.mu.Lock()
 		c.running = false
@@ -869,7 +891,9 @@ func (c *Controller) Start() error {
 	//   - 거부/제한: 무한 "연결 중" 대신 HUD에 명확히 "마이크 권한 필요"를 표면화한다.
 	// (windows/기타 OS는 MicrophoneStatus가 unknown이라 이 분기가 no-op.)
 	if sel.Mode != audio.SelectLoopback {
-		switch permission.MicrophoneStatus() {
+		st := permission.MicrophoneStatus()
+		log.Printf("[controller] Start() 마이크 권한 상태=%v (입력모드=%v)", st, sel.Mode)
+		switch st {
 		case permission.MicNotDetermined:
 			permission.RequestMicrophone()
 		case permission.MicDenied, permission.MicRestricted:
@@ -1166,6 +1190,15 @@ func normalizeSettings(s config.Settings) config.Settings {
 	return s
 }
 
+// truncRunes shortens s to at most n runes (…를 붙임), UTF-8 경계를 깨지 않는다(로그 프리뷰용).
+func truncRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n]) + "…"
+}
+
 // clamp01 constrains v to [0, 1].
 func clamp01(v float64) float64 {
 	if v < 0 {
@@ -1193,11 +1226,18 @@ func (c *Controller) countingSource(src audio.Source) audio.Source {
 }
 
 func (s *countingSource) Start(ctx context.Context, onChunk func(audio.Chunk)) error {
+	log.Printf("[controller] 오디오 소스 Start — 첫 청크 대기(무음이면 마이크 권한/장치 확인)")
+	var firstLogged bool
 	return s.src.Start(ctx, func(chunk audio.Chunk) {
 		s.ctrl.sentSamples.Add(int64(len(chunk)))
 		// 제어 HUD 레벨 미터(원본 audio.level): 청크 RMS + 수신 시각을 atomic으로 기록한다.
-		s.ctrl.level.Store(math.Float64bits(float64(audio.RMS(chunk))))
+		rms := float64(audio.RMS(chunk))
+		s.ctrl.level.Store(math.Float64bits(rms))
 		s.ctrl.lastChunkNano.Store(time.Now().UnixNano())
+		if !firstLogged {
+			firstLogged = true
+			log.Printf("[controller] 첫 오디오 청크 수신 samples=%d rms=%.4f — 캡처 정상", len(chunk), rms)
+		}
 		onChunk(chunk)
 	})
 }

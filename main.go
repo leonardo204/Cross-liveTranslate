@@ -20,7 +20,9 @@ import (
 	"fmt"
 	"io/fs"
 	"log"
+	"net"
 	"os"
+	"path/filepath"
 
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/overlay"
@@ -38,6 +40,15 @@ import (
 //go:embed all:frontend
 var assets embed.FS
 
+// init forces Go's pure-Go DNS resolver instead of the macOS cgo resolver
+// (getaddrinfo). 근본 버그 수정: 번역 시작 시 malgo(CoreAudio) 오디오 초기화와 gemini
+// 웹소켓용 cgo DNS 조회가 동시에 cgo로 실행되면 macOS에서 SIGSEGV("signal arrived during
+// cgo execution")로 controller가 급종료됐다(간헐적 "번역 안 됨"의 실제 원인). DNS를 순수 Go
+// 리졸버로 돌리면 이 cgo 경합이 사라진다. 빌드 태그 netgo와 함께 이중 안전장치.
+func init() {
+	net.DefaultResolver.PreferGo = true
+}
+
 func main() {
 	// Windows self-update: if this process was relaunched in apply mode
 	// (`--apply-update --target ...`), perform the in-place swap + relaunch
@@ -54,6 +65,11 @@ func main() {
 	// Ignore parse errors from foreign flags; role keeps its default/value.
 	_ = fset.Parse(os.Args[1:])
 
+	// 진단 로그를 파일로도 남긴다. `open`으로 실행하면 stdout/stderr가 사라져 "연결 중…"에서
+	// 멈추는 등의 원인(무음/API키/네트워크/권한)을 추적할 수 없다. 역할별 로그 파일에 append 하고,
+	// 터미널 실행 시에도 보이도록 stderr에 티(tee)한다. 실패해도 무해(stderr 로깅만 유지).
+	setupFileLogging(role)
+
 	switch role {
 	case "overlay":
 		runOverlay()
@@ -62,6 +78,41 @@ func main() {
 	default:
 		runController()
 	}
+}
+
+// logDir returns ~/Library/Logs/Cross-liveTranslate (created if missing).
+func logDir() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	dir := filepath.Join(home, "Library", "Logs", "Cross-liveTranslate")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return "", err
+	}
+	return dir, nil
+}
+
+// setupFileLogging redirects the standard logger to <role>.log (append) tee'd to
+// stderr, and stamps date/time+shortfile prefixes. `open`-launched runs (no
+// terminal) are then diagnosable by reading the file. 실패는 무해(stderr 유지).
+func setupFileLogging(role string) {
+	log.SetFlags(log.LstdFlags | log.Lmicroseconds | log.Lshortfile)
+	log.SetPrefix("[" + role + "] ")
+	dir, err := logDir()
+	if err != nil {
+		return
+	}
+	f, err := os.OpenFile(filepath.Join(dir, role+".log"), os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0o644)
+	if err != nil {
+		return
+	}
+	// stderr(fd 2)를 로그 파일로 리다이렉트해 패닉/cgo 치명 오류(fd 2 직접 출력)까지 파일에
+	// 남긴다. `open` 실행은 stderr가 분리돼 크래시 원인이 유실되므로 이 단계가 진단의 핵심이다.
+	// stderr 자체가 파일을 가리키므로 log 출력은 파일로 단일 기록한다(이중 기록 방지).
+	redirectStderr(f)
+	log.SetOutput(f)
+	log.Printf("──── %s 프로세스 로깅 시작 (pid=%d) ────", role, os.Getpid())
 }
 
 // subFS returns the frontend subtree for a given process role as a root FS

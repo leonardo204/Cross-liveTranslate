@@ -17,6 +17,7 @@ import (
 	"context"
 	"embed"
 	"flag"
+	"fmt"
 	"io/fs"
 	"log"
 	"os"
@@ -26,6 +27,7 @@ import (
 	"cross-livetranslate/internal/updater"
 
 	"github.com/wailsapp/wails/v2"
+	"github.com/wailsapp/wails/v2/pkg/logger"
 	"github.com/wailsapp/wails/v2/pkg/options"
 	"github.com/wailsapp/wails/v2/pkg/options/assetserver"
 	"github.com/wailsapp/wails/v2/pkg/options/mac"
@@ -163,6 +165,22 @@ func positionHUDTopRight(ctx context.Context) {
 	wruntime.WindowSetPosition(ctx, x, y)
 }
 
+// stderrLogger is a Wails logger that writes to os.Stderr instead of the default
+// os.Stdout. settings 자식의 stdout은 controller가 읽는 control(NDJSON) 채널이므로,
+// Wails 진단 로그가 그 스트림을 오염시키지 않도록 stderr로 분리한다.
+type stderrLogger struct{}
+
+func (stderrLogger) write(level, message string) {
+	_, _ = fmt.Fprintln(os.Stderr, level+" | "+message)
+}
+func (l stderrLogger) Print(message string)   { l.write("PRT", message) }
+func (l stderrLogger) Trace(message string)   { l.write("TRA", message) }
+func (l stderrLogger) Debug(message string)   { l.write("DEB", message) }
+func (l stderrLogger) Info(message string)    { l.write("INF", message) }
+func (l stderrLogger) Warning(message string) { l.write("WAR", message) }
+func (l stderrLogger) Error(message string)   { l.write("ERR", message) }
+func (l stderrLogger) Fatal(message string)   { l.write("FAT", message) }
+
 // runSettings boots the settings window(760×580 표준 타이틀바 "liveTranslate 설정",
 // StartHidden). controller가 control("show")로 표시한다. SettingsAPI + App을 바인드하고
 // (SettingsAPI가 설정 파일·API 키·디바이스·모델·버전 계약을 노출), stdin control 루프를 돈다.
@@ -180,6 +198,12 @@ func runSettings() {
 		MaxHeight:     580,
 		DisableResize: true,
 		StartHidden:   true,
+		// 이 프로세스의 stdout은 controller가 읽는 control 채널 전용(NDJSON)이다.
+		// Wails 기본 로거는 os.Stdout에 쓰므로 control 라인과 뒤섞여 test-subtitle-on/off·changed
+		// 등 제어 메시지가 손상/유실된다(버그: '테스트 자막 표시'가 오버레이에 전혀 반영 안 됨).
+		// Wails 로그를 stderr로 돌려 stdout을 순수 control 채널로 유지한다.
+		Logger:   stderrLogger{},
+		LogLevel: logger.ERROR,
 		// 원본 SettingsWindowController: isReleasedWhenClosed=false — 닫기(X) 시 창을
 		// 파괴/종료하지 않고 숨기기만 해야 트레이/HUD에서 다시 열 수 있다.
 		HideWindowOnClose: true,

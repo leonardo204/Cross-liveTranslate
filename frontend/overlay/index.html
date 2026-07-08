@@ -121,6 +121,7 @@
         maxLines: 2,
         monitorIndex: 0,
         vertical: "bottom",
+        offset: 0.5,
       };
       let lastSubtitle = { lines: [], visible: false, source: "" };
 
@@ -176,12 +177,29 @@
         return parts.join(", ");
       }
 
+      // 영역(상/중/하)을 0/1/2 인덱스로 (원본 SubtitleOverlayView.regionIndex).
+      function areaIndex(v) {
+        return v === "top" ? 0 : v === "middle" ? 1 : 2;
+      }
+
+      // Vertical placement = 영역밴드 + 세부위치(offset). 원본과 동일하게 화면을 상/중/하로
+      // 3등분하고 영역 안에서 offset(0~1)으로 완전 이동시킨다: t=(areaIdx+offset)/3 (0~1),
+      // travel=가용높이-박스높이, topPad=travel×t (t=1이면 박스 하단이 맨 아래에 닿음).
+      // 박스 높이를 실측(offsetHeight)해 짧은 자막도 '하' 영역에서 바닥까지 도달한다.
+      function applyVerticalPosition() {
+        const off = Math.max(0, Math.min(1, typeof style.offset === "number" ? style.offset : 0.5));
+        const t = (areaIndex(style.vertical) + off) / 3;
+        // stage 세로 패딩(8px 위/아래)을 제외한 가용 높이.
+        const avail = Math.max(0, stage.clientHeight - 16);
+        const boxH = box.offsetHeight;
+        const travel = Math.max(0, avail - boxH);
+        box.style.marginTop = (travel * t) + "px";
+      }
+
       // Apply container-level style (vertical/horizontal placement + background).
       function applyContainerStyle() {
-        // Vertical placement relative to the monitor frame.
-        const v = style.vertical;
-        stage.style.justifyContent =
-          v === "top" ? "flex-start" : v === "middle" ? "center" : "flex-end";
+        // 세로는 marginTop(applyVerticalPosition)으로 배치하므로 stage는 항상 위 정렬.
+        stage.style.justifyContent = "flex-start";
 
         // Horizontal alignment (원본 leading/center/trailing).
         const a = style.align;
@@ -196,6 +214,9 @@
         box.style.background = style.bgEnabled
           ? rgba(style.bgColor, 1, style.bgOpacity)
           : "transparent";
+
+        // 세로 위치는 박스 크기에 의존하므로 컨테이너 스타일 적용 후 재계산한다.
+        applyVerticalPosition();
       }
 
       // Apply per-line text style to one element (main or source line).
@@ -243,6 +264,10 @@
           "hidden",
           !visible || (lines.length === 0 && !source)
         );
+
+        // 텍스트/줄수가 바뀌면 박스 높이가 달라지므로 세로 위치를 다시 계산한다
+        // (원본: 실측 박스높이로 travel 재계산 → 짧은 자막도 정확히 영역 경계에 배치).
+        applyVerticalPosition();
       }
 
       function onSubtitle(payload) {
@@ -266,6 +291,8 @@
         if (window.runtime && typeof window.runtime.EventsOn === "function") {
           window.runtime.EventsOn("subtitle:update", onSubtitle);
           window.runtime.EventsOn("style:update", onStyle);
+          // 창(모니터) 크기 변동 시 세로 위치를 재계산한다(가용 높이 변화 반영).
+          window.addEventListener("resize", applyVerticalPosition);
           applyContainerStyle();
           // Initial hint so we know the pipe is live even before first event.
           render();

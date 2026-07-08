@@ -903,7 +903,9 @@
         fillSelect($("selLang"), LANGS, (S.language && S.language.target) || "ko");
         await populateScreens();
         setSeg("segVertical", (S.position && S.position.vertical) || "bottom");
-        $("rngVOffset").value = 0.5; // 원본 subtitleVerticalOffset — 백엔드 필드 없음(UI 전용).
+        // 세부 위치(영역 내 세로 offset) — Position.Offset(0~1, 기본 0.5)에서 복원.
+        $("rngVOffset").value =
+          (S.position && typeof S.position.offset === "number") ? S.position.offset : 0.5;
         $("tgShowSource").checked = !!(S.language && S.language.showSource);
 
         // 자막 스타일
@@ -975,7 +977,14 @@
           commit();
         });
         wireSeg("segVertical", (v) => { if (!S.position) S.position = {}; S.position.vertical = v; commit(); });
-        // 세부 위치/캡처 시 표시 — 백엔드 필드 없음(UI 전용, 저장 안 됨).
+        // 세부 위치(영역 내 세로 offset 0~1) → Position.Offset 저장 + controller reload로 오버레이
+        // StyleMsg 갱신(실시간 반영). input 이벤트로 드래그 중에도 즉시 반영한다.
+        $("rngVOffset").addEventListener("input", () => {
+          if (!S.position) S.position = {};
+          S.position.offset = parseFloat($("rngVOffset").value);
+          commit();
+        });
+        // 캡처 시 표시 — 백엔드 필드 없음(UI 전용, 저장 안 됨).
         $("tgShowSource").addEventListener("change", () => {
           if (!S.language) S.language = {}; S.language.showSource = $("tgShowSource").checked; commit();
         });

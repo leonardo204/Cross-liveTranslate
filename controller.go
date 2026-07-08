@@ -637,6 +637,7 @@ func styleMsgFromSettings(s config.Settings) ipc.StyleMsg {
 		MaxLines:      s.Subtitle.MaxLines,
 		MonitorIndex:  s.Position.MonitorIndex,
 		Vertical:      s.Position.Vertical,
+		Offset:        s.Position.Offset,
 	}
 }
 
@@ -1160,6 +1161,8 @@ func normalizeSettings(s config.Settings) config.Settings {
 	if s.Position.MonitorIndex < 0 {
 		s.Position.MonitorIndex = 0
 	}
+	// 세부 세로위치(영역 내 offset)를 [0,1]로 클램프한다(원본 subtitleVerticalOffset 규칙).
+	s.Position.Offset = clamp01(s.Position.Offset)
 	return s
 }
 

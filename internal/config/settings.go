@@ -62,10 +62,13 @@ type SubtitleSettings struct {
 	MaxLines      int     `json:"maxLines"`      // UI 1..4, 기본 2.
 }
 
-// PositionSettings holds subtitle placement (원본 subtitle.screenID + verticalPosition).
+// PositionSettings holds subtitle placement (원본 subtitle.screenID + verticalPosition
+// + verticalOffset). 세로 위치 = 영역(top/middle/bottom) + 영역 내 세부위치(offset 0~1)의
+// 조합이다(원본 SubtitleOverlayView: t=(areaIdx+offset)/3).
 type PositionSettings struct {
-	MonitorIndex int    `json:"monitorIndex"` // 0=주 화면.
-	Vertical     string `json:"vertical"`     // top|middle|bottom, 기본 bottom.
+	MonitorIndex int     `json:"monitorIndex"` // 0=주 화면.
+	Vertical     string  `json:"vertical"`     // top|middle|bottom, 기본 bottom.
+	Offset       float64 `json:"offset"`       // 영역 내 세부 세로위치 0(위)~1(아래), 기본 0.5.
 }
 
 // AudioSettings holds translated-audio playback + ducking (원본 audio.playback/duck.*).
@@ -149,6 +152,7 @@ func DefaultSettings() Settings {
 		Position: PositionSettings{
 			MonitorIndex: 0,        // 주 화면(원본 subtitleScreenID nil 폴백)
 			Vertical:     "bottom", // 원본 subtitleVerticalPosition 기본
+			Offset:       0.5,      // 원본 subtitleVerticalOffset 기본(영역 중간). register 0 충돌 방지값.
 		},
 		Audio: AudioSettings{
 			PlaybackEnabled: false, // AudioDefault.playbackEnabled

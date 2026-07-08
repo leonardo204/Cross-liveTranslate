@@ -59,7 +59,8 @@ type StyleMsg struct {
 	Align         string  `json:"align"`         // leading|center|trailing.
 	MaxLines      int     `json:"maxLines"`      // 표시 최대 줄수.
 	MonitorIndex  int     `json:"monitorIndex"`  // 0=주 화면(오버레이 재커버 대상).
-	Vertical      string  `json:"vertical"`      // top|middle|bottom.
+	Vertical      string  `json:"vertical"`      // top|middle|bottom(영역).
+	Offset        float64 `json:"offset"`        // 영역 내 세부 세로위치 0(위)~1(아래). 원본 (areaIdx+offset)/3.
 }
 
 // ControlMsg carries a process-control command over the same NDJSON stream

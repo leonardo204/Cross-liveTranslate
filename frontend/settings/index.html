@@ -1103,9 +1103,11 @@
         });
         // '지금 설치' — 스테이징된 업데이트를 다운로드/검증/교체 후 앱을 재시작한다.
         $("btnInstallUpdate").addEventListener("click", async () => {
-          const p = app(); if (!p || !p.DownloadAndInstallUpdate) return;
-          $("updateMsg").textContent = "설치 중…";
-          try { await p.DownloadAndInstallUpdate(); }
+          // 설치는 controller(본체) 경유로 위임한다(settings 프로세스에서 직접 실행하면
+          // 본체가 살아남아 스왑/재실행이 실패). controller가 앱 전체를 종료→교체→재실행한다.
+          const a = api(); if (!a || !a.InstallUpdate) return;
+          $("updateMsg").textContent = "설치 중… 앱이 잠시 후 자동 재시작됩니다";
+          try { await a.InstallUpdate(); }
           catch (e) { $("updateMsg").textContent = "설치 실패"; }
         });
 

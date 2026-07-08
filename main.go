@@ -151,6 +151,7 @@ func runController() {
 	app := NewApp()
 	ctrl := newController()
 	app.ctrl = ctrl
+	ctrl.app = app // 설정 창의 '지금 설치'를 controller 경유로 실행하기 위한 참조.
 
 	err := wails.Run(&options.App{
 		Title:            "Cross-liveTranslate",

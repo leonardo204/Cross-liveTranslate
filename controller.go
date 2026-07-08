@@ -60,6 +60,12 @@ type controllerFlags struct {
 type Controller struct {
 	ctx context.Context
 
+	// app은 이 controller 프로세스에 바인드된 App(업데이트 설치 위임용). 설정 창의
+	// '지금 설치'는 settings 프로세스에서 직접 App.DownloadAndInstallUpdate를 부르면
+	// settings만 종료되고 본체(controller)는 살아남아 스왑/재실행이 꼬인다. 그래서 설치는
+	// control 채널로 controller에 위임하고, 여기서 App을 통해 실행해 앱 전체를 종료·교체·재실행한다.
+	app *App
+
 	apiKey    string
 	apiKeyErr error
 	model     string
@@ -367,6 +373,10 @@ func (c *Controller) spawnSettings() {
 				c.queueTestSubtitle(true)
 			case "test-subtitle-off":
 				c.queueTestSubtitle(false)
+			case "install-update":
+				// 설정 창의 '지금 설치' 위임 — controller(본체)에서 실행해야 앱 전체가
+				// 종료·교체·재실행된다. goroutine으로 실행(control 리더 비차단).
+				go c.installUpdate()
 			}
 		},
 	})
@@ -822,6 +832,25 @@ func (c *Controller) shutdown() {
 			c.r.Close()
 		}
 	})
+}
+
+// installUpdate runs the self-update pipeline from the controller(본체) process so
+// that quitting terminates the whole app tree(controller + overlay + settings),
+// letting the swap helper replace the bundle and relaunch. 설정 창의 '지금 설치'가
+// control("install-update")로 이 경로를 호출한다. controller의 pending이 비어 있을 수
+// 있으니 먼저 CheckUpdate로 스테이징한 뒤 설치한다. goroutine에서 호출(control 리더 비차단).
+func (c *Controller) installUpdate() {
+	if c.app == nil {
+		log.Println("[controller] install-update: app 미바인드")
+		return
+	}
+	if _, err := c.app.CheckUpdate(); err != nil {
+		log.Println("[controller] install-update CheckUpdate:", err)
+		return
+	}
+	if err := c.app.DownloadAndInstallUpdate(); err != nil {
+		log.Println("[controller] install-update 실패:", err)
+	}
 }
 
 // initTray installs the system tray (menu bar) mirroring the 원본 메뉴 구성:

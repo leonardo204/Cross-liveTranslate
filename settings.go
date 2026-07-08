@@ -237,6 +237,12 @@ func (s *SettingsAPI) PermissionStatus() PermissionInfo {
 // CurrentVersion returns the running application version (설정 일반 카테고리).
 func (s *SettingsAPI) CurrentVersion() string { return appVersion }
 
+// InstallUpdate requests the controller(본체) to run the self-update install. 설정
+// 프로세스에서 직접 App.DownloadAndInstallUpdate를 부르면 settings만 종료되고 본체가
+// 살아남아 스왑/재실행이 실패한다. control("install-update")로 controller에 위임해
+// 앱 전체가 종료·교체·재실행되게 한다.
+func (s *SettingsAPI) InstallUpdate() { s.sendControl("install-update") }
+
 // CheckUpdate delegates to the shared updater (App.CheckUpdate) so the settings
 // window can trigger an update check without duplicating the pipeline.
 func (s *SettingsAPI) CheckUpdate() (*UpdateInfo, error) {

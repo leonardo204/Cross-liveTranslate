@@ -45,8 +45,13 @@ type ModelInfo struct {
 // Microphone은 AVCaptureDevice 실측(permission.MicStatus 문자열), ScreenRecording은
 // 사전 조회 API가 없어 항상 "unknown"(원본 systemAudio와 동일).
 type PermissionInfo struct {
-	Microphone      string `json:"microphone"`      // notDetermined|authorized|denied|restricted|unknown
-	ScreenRecording string `json:"screenRecording"` // 항상 unknown(사전 조회 API 없음)
+	Microphone string `json:"microphone"` // notDetermined|authorized|denied|restricted|unknown
+	// SystemAudio: 시스템 오디오 캡처(Core Audio Process Tap) 권한/가용성.
+	// authorized(사용 가능) | denied(권한 필요) | restricted(macOS 14.4 미만 미지원).
+	// tap 경량 프로브(audio.SystemTapStatus)로 실측한다.
+	SystemAudio string `json:"systemAudio"`
+	// ScreenRecording: 하위호환 유지(프론트 구버전). SystemAudio와 동일 값을 채운다.
+	ScreenRecording string `json:"screenRecording"`
 }
 
 // SettingsAPI is the Wails-bound struct for the settings window
@@ -221,9 +226,11 @@ func (s *SettingsAPI) Models() []ModelInfo {
 //   - ScreenRecording: 원본 시스템 오디오 캡처와 동일하게 사전 조회 API가 없어 항상
 //     "unknown"(첫 캡처 시 OS 프롬프트). 무상태 조회라 프론트가 재호출하면 최신값이 반영된다.
 func (s *SettingsAPI) PermissionStatus() PermissionInfo {
+	sysAudio := audio.SystemTapStatus()
 	return PermissionInfo{
 		Microphone:      string(permission.MicrophoneStatus()),
-		ScreenRecording: "unknown",
+		SystemAudio:     sysAudio,
+		ScreenRecording: sysAudio, // 하위호환(구 프론트가 screenRecording 참조).
 	}
 }
 

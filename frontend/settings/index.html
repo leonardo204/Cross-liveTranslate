@@ -873,7 +873,7 @@
         try {
           const p = await a.PermissionStatus();
           apply("permMic", p.microphone || p.Microphone);
-          apply("permSys", p.screenRecording || p.ScreenRecording);
+          apply("permSys", p.systemAudio || p.SystemAudio || p.screenRecording || p.ScreenRecording);
         } catch (_) {
           $("permMic").textContent = "확인 불가"; $("permMic").className = "sec";
           $("permSys").textContent = "확인 불가"; $("permSys").className = "sec";

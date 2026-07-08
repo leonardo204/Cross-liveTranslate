@@ -62,7 +62,7 @@ done
 VERSION="${VERSION#v}"        # 내부 처리는 항상 X.Y.Z
 TAG="v${VERSION}"             # GitHub tag
 
-MINISIGN_SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.tauri/flipmd.key}"
+MINISIGN_SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.tauri/cross-livetranslate.key}"
 [[ -f "$MINISIGN_SECRET_KEY" ]] || die "MINISIGN_SECRET_KEY 파일 없음: $MINISIGN_SECRET_KEY"
 
 NOTES="${NOTES:-${RELEASE_NOTES:-Cross-liveTranslate ${VERSION}}}"
@@ -156,9 +156,52 @@ SIG=$(base64 < "${DMG_PATH}.minisig" | tr -d '\n')
 [[ -n "$SIG" ]] || die ".minisig 내용이 비어있습니다"
 log "[sign] 서명 완료"
 
+# ── 5b. Windows 인스톨러 빌드 + 서명 (mingw 있을 때만; SKIP_WINDOWS=1로 생략) ──
+# macOS에서 mingw-w64로 Windows(amd64) 크로스컴파일 → NSIS 인스톨러 → minisign 서명.
+# latest.json의 windows-x86_64 항목과 업로드 자산에 포함된다(updater가 인스톨러 exe를 실행).
+WIN_INSTALLER_NAME=""
+WIN_SIG=""
+WIN_CC="${WIN_CC:-x86_64-w64-mingw32-gcc}"
+if [[ "${SKIP_WINDOWS:-0}" != "1" ]] && command -v "$WIN_CC" >/dev/null 2>&1; then
+  log "[win] wails build windows/amd64 (netgo, cgo via mingw)"
+  # 새 아이콘 반영: appicon이 최신이면 옛 icon.ico를 지워 재생성.
+  if [[ -f "$ROOT/build/windows/icon.ico" && "$ROOT/build/appicon.png" -nt "$ROOT/build/windows/icon.ico" ]]; then
+    rm -f "$ROOT/build/windows/icon.ico"
+  fi
+  win_nsis=""
+  command -v makensis >/dev/null 2>&1 && win_nsis="-nsis" || warn "makensis 없음 — Windows 인스톨러 스킵(포터블 exe만)"
+  CGO_ENABLED=1 CC="$WIN_CC" CXX="${WIN_CXX:-x86_64-w64-mingw32-g++}" \
+    PATH="$PATH_WITH_GO:/opt/homebrew/bin" wails build \
+      -platform windows/amd64 \
+      -tags netgo \
+      -ldflags "-X main.appVersion=${VERSION}" \
+      $win_nsis || die "Windows 빌드 실패"
+
+  # 인스톨러 우선(설치형), 없으면 포터블 exe. 버전명으로 리네임해 릴리스 자산명을 명확히 한다.
+  win_src=$(ls "$BIN"/*installer*.exe 2>/dev/null | head -1 || true)
+  if [[ -n "$win_src" ]]; then
+    WIN_INSTALLER_NAME="Cross-liveTranslate_${VERSION}_windows_amd64_installer.exe"
+  else
+    win_src=$(ls "$BIN"/*.exe 2>/dev/null | grep -v installer | head -1 || true)
+    [[ -n "$win_src" ]] && WIN_INSTALLER_NAME="Cross-liveTranslate_${VERSION}_windows_amd64.exe"
+  fi
+  [[ -n "$win_src" ]] || die "Windows 산출물(.exe)을 찾지 못했습니다 ($BIN)"
+  WIN_PATH="$DIST/$WIN_INSTALLER_NAME"
+  cp "$win_src" "$WIN_PATH"
+  log "[win] 산출물: $WIN_INSTALLER_NAME"
+
+  sign_minisign "$WIN_PATH"
+  WIN_SIG=$(base64 < "${WIN_PATH}.minisig" | tr -d '\n')
+  [[ -n "$WIN_SIG" ]] || die "Windows .minisig 내용이 비어있습니다"
+  log "[win] 서명 완료"
+else
+  warn "Windows 빌드 스킵(mingw 부재 또는 SKIP_WINDOWS=1) — latest.json은 macOS만 포함"
+fi
+
 # ── 6. latest.json 생성 ────────────────────────────────────────────────────
 LATEST="$DIST/latest.json"
 DMG_URL="https://github.com/${GH_REPO}/releases/download/${TAG}/${DMG_NAME}"
+WIN_URL="https://github.com/${GH_REPO}/releases/download/${TAG}/${WIN_INSTALLER_NAME}"
 
 log "[manifest] $LATEST"
 {
@@ -174,7 +217,16 @@ log "[manifest] $LATEST"
   printf '    "darwin-x86_64": {\n'
   printf '      "signature": "%s",\n' "$SIG"
   printf '      "url": "%s"\n'        "$DMG_URL"
-  printf '    }\n'
+  # Windows 자산이 있으면 windows-x86_64 항목을 추가한다(updater PlatformKey와 일치).
+  if [[ -n "$WIN_SIG" ]]; then
+    printf '    },\n'
+    printf '    "windows-x86_64": {\n'
+    printf '      "signature": "%s",\n' "$WIN_SIG"
+    printf '      "url": "%s"\n'        "$WIN_URL"
+    printf '    }\n'
+  else
+    printf '    }\n'
+  fi
   printf '  }\n'
   printf '}\n'
 } > "$LATEST"
@@ -199,11 +251,13 @@ if [[ "$GH_UPLOAD" -eq 1 ]]; then
     log "[gh] release 이미 존재: $TAG — 자산만 업로드"
   fi
 
-  log "[gh] 자산 업로드: $DMG_NAME + latest.json"
+  # 업로드 자산: macOS DMG + latest.json (+ Windows 인스톨러가 있으면 함께).
+  UPLOAD_ASSETS=("$DMG_PATH" "$LATEST")
+  [[ -n "$WIN_INSTALLER_NAME" && -f "$DIST/$WIN_INSTALLER_NAME" ]] && UPLOAD_ASSETS+=("$DIST/$WIN_INSTALLER_NAME")
+  log "[gh] 자산 업로드: $(basename "$DMG_PATH")${WIN_INSTALLER_NAME:+ + $WIN_INSTALLER_NAME} + latest.json"
   gh release upload "$TAG" \
     --repo "$GH_REPO" \
-    "$DMG_PATH" \
-    "$LATEST" \
+    "${UPLOAD_ASSETS[@]}" \
     --clobber
   log "[gh] 업로드 완료"
   log "[gh] 릴리즈 URL: https://github.com/${GH_REPO}/releases/tag/${TAG}"

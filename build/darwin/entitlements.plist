@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- 마이크 입력 캡처(실시간 번역 입력). TCC 마이크 권한과 함께 필요. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
+	<!-- WKWebView(Wails 프론트)는 JavaScript JIT를 사용하므로 하드닝 런타임에서 허용해야
+	     웹뷰가 정상 동작한다. -->
+	<key>com.apple.security.cs.allow-jit</key>
+	<true/>
+	<key>com.apple.security.cs.allow-unsigned-executable-memory</key>
+	<true/>
+</dict>
+</plist>

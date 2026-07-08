@@ -24,6 +24,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"runtime"
 
 	"cross-livetranslate/internal/hudpos"
 	"cross-livetranslate/internal/ipc"
@@ -45,6 +46,11 @@ var assets embed.FS
 // logVerbose gates high-frequency 진단 로그(자막 push 등). 기본 off — 라이프사이클
 // 로그(권한/연결/첫 청크/영구실패)는 항상 남기고, 프레임 단위 로그는 CLT_VERBOSE=1일 때만.
 var logVerbose = os.Getenv("CLT_VERBOSE") == "1"
+
+// hudStartHidden: 제어 HUD를 시작 시 숨길지. darwin은 트레이(NSStatusBar)로 HUD를
+// 띄우므로 숨긴다(원본 동작). Windows/기타는 트레이가 stub이라 숨기면 창을 띄울 수단이
+// 없으므로 처음부터 표시한다. (Windows 트레이 구현 시 false로 되돌린다.)
+var hudStartHidden = runtime.GOOS == "darwin"
 
 // init forces Go's pure-Go DNS resolver instead of the macOS cgo resolver
 // (getaddrinfo). 근본 버그 수정: 번역 시작 시 malgo(CoreAudio) 오디오 초기화와 gemini
@@ -159,9 +165,10 @@ func runController() {
 		Height:           hudHeight,
 		Frameless:   true,
 		AlwaysOnTop: true,
-		// 원본 HUDController.isVisible=false — 앱 시작 시 제어 HUD는 숨김 상태이며,
-		// 트레이 "제어 HUD 표시" 또는 캡처 시작(자동 표시)으로 띄운다. 트레이 체크 상태와 일치.
-		StartHidden:      true,
+		// 원본 HUDController.isVisible=false — macOS는 시작 시 제어 HUD를 숨기고 트레이로
+		// 띄운다. 그러나 Windows는 트레이가 아직 stub(no-op)이라 숨기면 창을 띄울 수단이 없어
+		// 앱이 보이지 않게 실행된다. 따라서 트레이가 없는 플랫폼에서는 HUD를 처음부터 표시한다.
+		StartHidden:      hudStartHidden,
 		HideWindowOnClose: true,
 		BackgroundColour:  &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		AssetServer: &assetserver.Options{

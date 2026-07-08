@@ -16,6 +16,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -203,11 +204,19 @@ func (c *Client) connectOnce() connectResult {
 
 	dialer := *websocket.DefaultDialer
 	dialer.HandshakeTimeout = 15 * time.Second
+	// 보안: endpointURL()에는 API 키가 쿼리로 들어가므로 URL을 로그하지 않는다(호스트만).
+	log.Printf("[gemini] 연결 시도 model=%q target=%q source=%q resume=%v",
+		c.cfg.Model, c.cfg.TargetLanguage, c.cfg.SourceLanguage, handle != "")
 	conn, resp, err := dialer.DialContext(c.ctx, c.endpointURL(), nil)
 	if err != nil {
 		if c.ctx.Err() != nil {
 			return resultStopped
 		}
+		status := 0
+		if resp != nil {
+			status = resp.StatusCode
+		}
+		log.Printf("[gemini] 연결 실패 httpStatus=%d err=%v", status, err)
 		// 4xx 핸드셰이크 거부 → 키/모델/요청 문제. 재연결 무의미.
 		if resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			c.emit(pipeline.Event{
@@ -221,14 +230,17 @@ func (c *Client) connectOnce() connectResult {
 	c.setConn(conn)
 	defer c.clearConn()
 	defer conn.Close()
+	log.Printf("[gemini] 웹소켓 연결됨 — setup 송신")
 
 	// setup(첫 메시지) 전송.
 	if err := c.writeJSON(BuildSetup(c.cfg.Model, c.cfg.TargetLanguage, c.cfg.SourceLanguage, c.cfg.RequestInputTranscription, handle)); err != nil {
 		if c.ctx.Err() != nil {
 			return resultStopped
 		}
+		log.Printf("[gemini] setup 송신 실패 err=%v", err)
 		return resultDisconnected
 	}
+	log.Printf("[gemini] setup 송신 완료 — setupComplete 대기")
 
 	// 수신 루프.
 	for {
@@ -279,6 +291,14 @@ func (c *Client) handleServerData(data []byte) (reconnectNow bool) {
 		}
 		if sc.InputTranscription != nil && sc.InputTranscription.Text != "" {
 			c.emit(pipeline.Event{Kind: pipeline.SourceDelta, Text: sc.InputTranscription.Text})
+		}
+		// 일부 모델은 번역문을 modelTurn.parts[].text로 보낸다(오디오 대신 텍스트 경로).
+		if sc.ModelTurn != nil {
+			for _, part := range sc.ModelTurn.Parts {
+				if part.Text != "" {
+					c.emit(pipeline.Event{Kind: pipeline.TranslatedDelta, Text: part.Text})
+				}
+			}
 		}
 		if sc.ModelTurn != nil && c.cfg.EmitOutputAudio {
 			// EmitOutputAudio가 false면 재생 소비자가 없으므로 대용량 PCM 이벤트를 만들지 않는다
@@ -346,6 +366,7 @@ func (c *Client) onSetupComplete() {
 	c.proactiveTimer = time.AfterFunc(proactiveInterval, c.triggerProactiveReconnect)
 	c.mu.Unlock()
 
+	log.Printf("[gemini] setupComplete 수신 — READY (오디오 송신 시작)")
 	c.emitState(pipeline.StateReady, nil)
 }
 

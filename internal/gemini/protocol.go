@@ -147,9 +147,11 @@ type ModelTurn struct {
 	Parts []Part `json:"parts,omitempty"`
 }
 
-// Part holds inline binary data (output audio).
+// Part holds either inline binary data (output audio) or a text delta. 일부 모델
+// (특히 텍스트 번역 경로)은 번역문을 modelTurn.parts[].text로 보내므로 Text도 파싱한다.
 type Part struct {
 	InlineData *InlineData `json:"inlineData,omitempty"`
+	Text       string      `json:"text,omitempty"`
 }
 
 // InlineData is base64 payload + mimeType (e.g. audio/pcm;rate=24000).

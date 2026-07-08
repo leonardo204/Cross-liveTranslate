@@ -223,18 +223,21 @@ func (r *Reconciler) performStart(ctx context.Context, d Desired) {
 
 	prov, err := r.newProvider(d.Provider)
 	if err != nil {
+		r.emitStartFailure(err)
 		r.forceStopIntent()
 		return
 	}
 	src, err := r.newSource(d.Selection)
 	if err != nil {
 		_ = prov.Stop()
+		r.emitStartFailure(err)
 		r.forceStopIntent()
 		return
 	}
 	events, err := prov.Start(ctx)
 	if err != nil {
 		_ = prov.Stop()
+		r.emitStartFailure(err)
 		r.forceStopIntent()
 		return
 	}
@@ -248,6 +251,7 @@ func (r *Reconciler) performStart(ctx context.Context, d Desired) {
 		srcCancel()
 		r.curProv.Store(nil)
 		_ = prov.Stop()
+		r.emitStartFailure(err)
 		r.forceStopIntent()
 		return
 	}
@@ -341,4 +345,14 @@ func (r *Reconciler) forceStopIntent() {
 	r.mu.Lock()
 	r.desired.Running = false
 	r.mu.Unlock()
+}
+
+// emitStartFailure surfaces a start-time failure(프로바이더/소스 생성·시작 실패)를
+// PermanentFailure 이벤트로 방출한다. 이것이 없으면 실패 시 조용히 정지 의도로만 되돌아가
+// 제어 HUD가 "연결 중…"에 영구히 멈춘다(원인 불명). 이제 controller가 이 이벤트를 로그로
+// 남기고 상태를 "오류"로 표시한다. run goroutine 단독 호출(pump와 동일 goroutine).
+func (r *Reconciler) emitStartFailure(err error) {
+	if r.onEvent != nil {
+		r.onEvent(pipeline.Event{Kind: pipeline.PermanentFailure, Err: err})
+	}
 }

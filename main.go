@@ -25,6 +25,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"cross-livetranslate/internal/hudpos"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/overlay"
 	"cross-livetranslate/internal/updater"
@@ -195,33 +196,15 @@ func runController() {
 
 // positionHUDTopRight places the control HUD near the primary screen's top-right
 // (원본 HUDController.defaultOrigin: 우상단 20pt 안쪽, 메뉴바 아래). 실패는 무해(로그만).
+//
+// 멀티모니터 견고성: Wails의 ScreenGetAll에는 모니터 원점(X/Y)이 없고 WindowSetPosition은
+// 창이 놓인 모니터 기준이라, Wails가 HUD를 보조 모니터에 생성하면 화면 밖으로 나갔다
+// (3모니터 환경에서 관측됨). NSScreen 기반 네이티브 배치(hudpos)로 주 모니터 visibleFrame
+// 우상단에 확실히 놓는다.
 func positionHUDTopRight(ctx context.Context) {
-	screens, err := wruntime.ScreenGetAll(ctx)
-	if err != nil || len(screens) == 0 {
-		return
+	if err := hudpos.PositionPrimaryTopRight("Cross-liveTranslate"); err != nil {
+		log.Println("[controller] HUD 배치:", err)
 	}
-	primary := screens[0]
-	for _, sc := range screens {
-		if sc.IsPrimary {
-			primary = sc
-			break
-		}
-	}
-	w := primary.Size.Width
-	if w == 0 {
-		w = primary.Width
-	}
-	if w == 0 {
-		return
-	}
-	const margin = 20
-	// y는 메뉴바(≈24pt) 아래로 내려 우상단에 배치한다.
-	x := w - hudWidth - margin
-	y := 40
-	if x < 0 {
-		x = 0
-	}
-	wruntime.WindowSetPosition(ctx, x, y)
 }
 
 // stderrLogger is a Wails logger that writes to os.Stderr instead of the default

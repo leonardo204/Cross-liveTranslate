@@ -21,10 +21,26 @@ if ! command -v "$CC_BIN" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "▶ wails build windows/amd64 (netgo, cgo via mingw)…"
+# 새 앱 아이콘(build/appicon.png) 반영: 옛 icon.ico가 있으면 지워 wails가 재생성하게 한다.
+if [[ -f build/windows/icon.ico && build/appicon.png -nt build/windows/icon.ico ]]; then
+  rm -f build/windows/icon.ico
+  echo "▸ 옛 icon.ico 제거(새 아이콘으로 재생성)"
+fi
+
+# -nsis: 포터블 exe + NSIS 설치형 인스톨러를 함께 생성(makensis 필요).
+NSIS_FLAG=""
+if command -v makensis >/dev/null 2>&1; then
+  NSIS_FLAG="-nsis"
+else
+  echo "⚠ makensis 없음 — 인스톨러 스킵(포터블 exe만). 'brew install makensis'로 설치 가능."
+fi
+
+echo "▶ wails build windows/amd64 (netgo, cgo via mingw${NSIS_FLAG:+, +NSIS 인스톨러})…"
 # -tags netgo: 순수 Go DNS 리졸버(cgo DNS 경합 회피, macOS와 동일 정책).
 CGO_ENABLED=1 CC="$CC_BIN" CXX="${CXX:-x86_64-w64-mingw32-g++}" \
-  wails build -platform windows/amd64 -tags netgo
+  wails build -platform windows/amd64 -tags netgo $NSIS_FLAG
 
-echo "✅ 완료: build/bin/cross-livetranslate.exe"
+echo "✅ 완료:"
+echo "   • 포터블:   build/bin/cross-livetranslate.exe"
+[[ -n "$NSIS_FLAG" ]] && echo "   • 인스톨러: build/bin/cross-livetranslate-amd64-installer.exe"
 echo "   Windows PC로 옮겨 실행(WebView2 런타임 필요)."

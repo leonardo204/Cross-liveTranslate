@@ -20,8 +20,6 @@ package main
 import (
 	"context"
 	"os"
-	"os/exec"
-	"runtime"
 	"sync"
 	"time"
 
@@ -29,6 +27,7 @@ import (
 	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/display"
 	"cross-livetranslate/internal/ipc"
+	"cross-livetranslate/internal/permission"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -42,11 +41,12 @@ type ModelInfo struct {
 	ModelIdentifier string `json:"modelIdentifier"`
 }
 
-// PermissionInfo carries OS permission states for the 권한 카테고리 (U1 최소 스텁).
-// U3/후속에서 실제 mac 권한(마이크/화면 녹화) 상태로 채운다.
+// PermissionInfo carries OS permission states for the 권한 카테고리.
+// Microphone은 AVCaptureDevice 실측(permission.MicStatus 문자열), ScreenRecording은
+// 사전 조회 API가 없어 항상 "unknown"(원본 systemAudio와 동일).
 type PermissionInfo struct {
-	Microphone      string `json:"microphone"`      // granted|denied|unknown
-	ScreenRecording string `json:"screenRecording"` // granted|denied|unknown
+	Microphone      string `json:"microphone"`      // notDetermined|authorized|denied|restricted|unknown
+	ScreenRecording string `json:"screenRecording"` // 항상 unknown(사전 조회 API 없음)
 }
 
 // SettingsAPI is the Wails-bound struct for the settings window
@@ -196,33 +196,11 @@ func (s *SettingsAPI) ListScreens() []display.ScreenInfo {
 
 // OpenSystemSettings opens the macOS Privacy & Security pane for the given
 // permission (원본 PermissionHelper deep link 이식). pane: "microphone" |
-// "screencapture" | "privacy". 다른 OS/실패는 무시(no-op).
+// "screencapture" | "privacy". NSWorkspace openURL을 쓰는 permission.OpenPrivacyPane에
+// 위임한다 — 서명된 번들 안에서 exec("open")보다 확실히 열린다(원본과 동일 경로).
+// 비-darwin OS에서는 no-op(마이크/화면 캡처 pane은 macOS 전용 개념).
 func (s *SettingsAPI) OpenSystemSettings(pane string) {
-	var url string
-	switch pane {
-	case "microphone":
-		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
-	case "screencapture":
-		url = "x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture"
-	default:
-		url = "x-apple.systempreferences:com.apple.preference.security"
-	}
-	openURL(url)
-}
-
-// openURL opens a URL/deep-link via the OS handler. runtime.BrowserOpenURL is
-// unreliable inside signed macOS bundles, so we shell out (wails 스킬 권고).
-func openURL(url string) {
-	var cmd *exec.Cmd
-	switch runtime.GOOS {
-	case "darwin":
-		cmd = exec.Command("open", url)
-	case "windows":
-		cmd = exec.Command("rundll32", "url.dll,FileProtocolHandler", url)
-	default:
-		cmd = exec.Command("xdg-open", url)
-	}
-	_ = cmd.Start()
+	permission.OpenPrivacyPane(pane)
 }
 
 // Models returns the model catalog (U1: Gemini Live 1개).
@@ -237,9 +215,16 @@ func (s *SettingsAPI) Models() []ModelInfo {
 	}
 }
 
-// PermissionStatus returns OS permission states (U1 최소 스텁).
+// PermissionStatus returns OS permission states (원본 PermissionHelper 실이식).
+//   - Microphone: AVCaptureDevice 실측 상태(notDetermined|authorized|denied|
+//     restricted|unknown). 프론트가 한국어 라벨(미요청/허용됨/거부됨/제한됨/확인불가)로 매핑.
+//   - ScreenRecording: 원본 시스템 오디오 캡처와 동일하게 사전 조회 API가 없어 항상
+//     "unknown"(첫 캡처 시 OS 프롬프트). 무상태 조회라 프론트가 재호출하면 최신값이 반영된다.
 func (s *SettingsAPI) PermissionStatus() PermissionInfo {
-	return PermissionInfo{Microphone: "unknown", ScreenRecording: "unknown"}
+	return PermissionInfo{
+		Microphone:      string(permission.MicrophoneStatus()),
+		ScreenRecording: "unknown",
+	}
 }
 
 // CurrentVersion returns the running application version (설정 일반 카테고리).

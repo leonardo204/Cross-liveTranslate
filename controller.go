@@ -34,6 +34,7 @@ import (
 	"cross-livetranslate/internal/cost"
 	"cross-livetranslate/internal/gemini"
 	"cross-livetranslate/internal/ipc"
+	"cross-livetranslate/internal/permission"
 	"cross-livetranslate/internal/pipeline"
 	"cross-livetranslate/internal/recording"
 	"cross-livetranslate/internal/subtitle"
@@ -170,6 +171,15 @@ func newController() *Controller {
 // the subtitle owner loop. Called from Wails OnStartup (ctx is the app context).
 func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	c.ctx = ctx
+
+	// 마이크 권한 명시 요청(핵심 버그 수정): malgo(miniaudio)는 macOS TCC 마이크 권한을
+	// 스스로 요청하지 않아, 권한 없이 캡처하면 무음만 흘러 Gemini가 "연결 중…"에서 멈춘다.
+	// 원본은 AVAudioEngine이 첫 캡처 시 자동 요청하던 것을, 우리는 여기서 명시적으로
+	// AVCaptureDevice requestAccess를 호출해 첫 실행 시 다이얼로그를 확실히 띄운다.
+	// 이미 결정된(허용/거부) 상태면 시스템이 다이얼로그를 띄우지 않으므로 항상 호출해도 안전.
+	// (ad-hoc 서명 개발 빌드는 재빌드 시 코드 해시가 바뀌어 TCC가 새 앱으로 인식 → 권한이
+	//  초기화될 수 있다. 이는 개발 워크플로 한계이며 근본 해결은 안정적 서명(별도 작업).)
+	permission.RequestMicrophone()
 
 	// 설정을 먼저 로드해 적용한다(Wave 1). 실패해도 기본값으로 HUD는 뜬다.
 	settings, serr := config.Load()
@@ -840,15 +850,34 @@ func (c *Controller) Start() error {
 		c.mu.Unlock()
 		return err
 	}
+	sel := c.sel
 	c.running = true
 	c.status = "starting"
 	d := app.Desired{
 		Running:   true,
-		Selection: c.sel,
+		Selection: sel,
 		Provider:  c.providerConfigLocked(),
 	}
 	audioCfg := c.settings.Audio
 	c.mu.Unlock()
+
+	// 마이크 권한 확인(캡처 시작 시): macOS에서 miniaudio 입력 캡처는 마이크 TCC 권한에
+	// 종속된다(권한 없으면 무음 → Gemini가 "연결 중…"에서 무한 대기). 루프백 전용 선택이
+	// 아니면(Auto/Mic/Device 모두 마이크 경로) 상태를 확인해:
+	//   - 미요청: 다이얼로그를 띄운다(첫 실행 안전망 — start()에서 이미 요청했더라도 idempotent).
+	//   - 거부/제한: 무한 "연결 중" 대신 HUD에 명확히 "마이크 권한 필요"를 표면화한다.
+	// (windows/기타 OS는 MicrophoneStatus가 unknown이라 이 분기가 no-op.)
+	if sel.Mode != audio.SelectLoopback {
+		switch permission.MicrophoneStatus() {
+		case permission.MicNotDetermined:
+			permission.RequestMicrophone()
+		case permission.MicDenied, permission.MicRestricted:
+			log.Println("[controller] 마이크 권한 필요 — 시스템 설정 > 개인정보 보호 및 보안 > 마이크에서 허용하세요")
+			c.mu.Lock()
+			c.status = "mic-permission"
+			c.mu.Unlock()
+		}
+	}
 
 	c.r.SetDesired(d)
 	// 테스트 자막(고정 미리보기)이 켜져 있으면 끈다 — 실제 자막이 우선(원본 AppState.start 이식).
@@ -1430,6 +1459,8 @@ func geminiStatusText(status string, keyLoaded bool) string {
 		return "API 키 없음 — 설정에서 Gemini API 키를 입력하세요"
 	}
 	switch {
+	case status == "mic-permission":
+		return "마이크 권한 필요 — 설정에서 허용"
 	case strings.Contains(status, "ready"):
 		return "번역 중"
 	case strings.Contains(status, "connecting"), status == "starting":

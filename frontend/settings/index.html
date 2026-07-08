@@ -857,12 +857,27 @@
 
       async function refreshPermissions() {
         const a = api(); if (!a) return;
-        const label = (v) => v === "granted" ? "허용됨" : v === "denied" ? "거부됨" : "미확인";
+        // 원본 PermissionHelper.Status 라벨 이식. 마이크는 AVCaptureDevice 실측값을 매핑한다.
+        const label = (v) => v === "authorized" || v === "granted" ? "허용됨"
+                           : v === "denied" ? "거부됨"
+                           : v === "restricted" ? "제한됨"
+                           : v === "notDetermined" ? "미요청"
+                           : "확인 불가";
+        // denied/restricted는 사용자가 직접 조치해야 하므로 경고색(빨강)으로 표시(원본 needsAction).
+        const needsAction = (v) => v === "denied" || v === "restricted";
+        const apply = (id, v) => {
+          const el = $(id);
+          el.textContent = label(v);
+          el.className = needsAction(v) ? "red" : "sec";
+        };
         try {
           const p = await a.PermissionStatus();
-          $("permMic").textContent = label(p.microphone || p.Microphone);
-          $("permSys").textContent = label(p.screenRecording || p.ScreenRecording);
-        } catch (_) { $("permMic").textContent = "미확인"; $("permSys").textContent = "미확인"; }
+          apply("permMic", p.microphone || p.Microphone);
+          apply("permSys", p.screenRecording || p.ScreenRecording);
+        } catch (_) {
+          $("permMic").textContent = "확인 불가"; $("permMic").className = "sec";
+          $("permSys").textContent = "확인 불가"; $("permSys").className = "sec";
+        }
       }
 
       function renderCost() {

@@ -12,6 +12,18 @@ import "C"
 
 import "unsafe"
 
+// 근본 버그 수정(SIGSEGV): 아래 export 콜백은 AppKit 메뉴 target-action에서 **메인 스레드**로
+// 동기 호출된다. 핸들러(번역 시작 등)는 malgo(CoreAudio) 오디오 초기화·리컨실러 채널 작업 등
+// 무거운 작업을 하는데, 이를 메인 스레드에서 동기로 돌리면 AppKit 런루프를 점유/재진입해
+// "signal arrived during cgo execution" SIGSEGV로 앱이 급종료된다(트레이로 시작 시 크래시,
+// autostart는 goroutine이라 정상이던 차이의 원인). 따라서 각 핸들러를 goroutine에서 실행해
+// 메뉴 액션이 AppKit에 즉시 반환되도록 한다(Wails 바인딩 호출도 동일하게 off-main-thread다).
+func runHandler(fn func()) {
+	if fn != nil {
+		go fn()
+	}
+}
+
 // Init installs the macOS menu-bar (NSStatusBar) tray with the given handlers.
 // Menu actions are dispatched on the main thread by AppKit and bridged to the
 // stored Go handlers via the exported callbacks below.
@@ -49,29 +61,13 @@ func SetHUDVisible(visible bool) {
 }
 
 //export lt_tray_go_toggle_translate
-func lt_tray_go_toggle_translate() {
-	if handlers.OnToggleTranslate != nil {
-		handlers.OnToggleTranslate()
-	}
-}
+func lt_tray_go_toggle_translate() { runHandler(handlers.OnToggleTranslate) }
 
 //export lt_tray_go_toggle_hud
-func lt_tray_go_toggle_hud() {
-	if handlers.OnToggleHUD != nil {
-		handlers.OnToggleHUD()
-	}
-}
+func lt_tray_go_toggle_hud() { runHandler(handlers.OnToggleHUD) }
 
 //export lt_tray_go_settings
-func lt_tray_go_settings() {
-	if handlers.OnSettings != nil {
-		handlers.OnSettings()
-	}
-}
+func lt_tray_go_settings() { runHandler(handlers.OnSettings) }
 
 //export lt_tray_go_quit
-func lt_tray_go_quit() {
-	if handlers.OnQuit != nil {
-		handlers.OnQuit()
-	}
-}
+func lt_tray_go_quit() { runHandler(handlers.OnQuit) }

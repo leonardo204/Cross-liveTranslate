@@ -29,6 +29,7 @@ import (
 	"time"
 
 	"cross-livetranslate/internal/app"
+	"cross-livetranslate/internal/childproc"
 	"cross-livetranslate/internal/audio"
 	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/cost"
@@ -319,6 +320,9 @@ func (c *Controller) spawnOverlay() {
 	}
 	c.child = cmd
 	c.childStdin = stdin
+	// 부모 수명에 묶는다(Windows Job Object): controller가 어떤 이유로 죽든(정상 종료/작업
+	// 관리자 강제종료) OS가 이 자식을 함께 죽여 오버레이 프로세스가 고아로 남지 않게 한다.
+	childproc.Supervise(cmd.Process.Pid)
 	log.Printf("[controller] overlay child spawned pid=%d", cmd.Process.Pid)
 
 	// 자식이 죽으면 로그(감독). controller 종료 시 shutdown에서 Kill.
@@ -360,6 +364,8 @@ func (c *Controller) spawnSettings() {
 	}
 	c.settingsChild = cmd
 	c.settingsStdin = stdin
+	// 부모 수명에 묶는다(Windows Job Object) — settings 자식도 고아로 남지 않게.
+	childproc.Supervise(cmd.Process.Pid)
 	log.Printf("[controller] settings child spawned pid=%d", cmd.Process.Pid)
 
 	// settings 자식의 stdout에서 control 신호를 읽어 반영한다: "changed"(설정 파일 변경),

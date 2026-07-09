@@ -52,6 +52,11 @@ var logVerbose = os.Getenv("CLT_VERBOSE") == "1"
 // 없으므로 처음부터 표시한다. (Windows 트레이 구현 시 false로 되돌린다.)
 var hudStartHidden = runtime.GOOS == "darwin"
 
+// hudHideOnClose: 제어 HUD 닫기 시 숨김(true) vs 종료(false). darwin은 트레이로 다시 띄울
+// 수 있어 숨김. Windows/기타는 트레이가 stub이라 숨기면 되살릴 수 없으므로 닫기=종료로 둔다
+// (그렇지 않으면 닫아도 프로세스가 계속 남는다). Windows 트레이 구현 시 재검토.
+var hudHideOnClose = runtime.GOOS == "darwin"
+
 // init forces Go's pure-Go DNS resolver instead of the macOS cgo resolver
 // (getaddrinfo). 근본 버그 수정: 번역 시작 시 malgo(CoreAudio) 오디오 초기화와 gemini
 // 웹소켓용 cgo DNS 조회가 동시에 cgo로 실행되면 macOS에서 SIGSEGV("signal arrived during
@@ -169,7 +174,10 @@ func runController() {
 		// 띄운다. 그러나 Windows는 트레이가 아직 stub(no-op)이라 숨기면 창을 띄울 수단이 없어
 		// 앱이 보이지 않게 실행된다. 따라서 트레이가 없는 플랫폼에서는 HUD를 처음부터 표시한다.
 		StartHidden:      hudStartHidden,
-		HideWindowOnClose: true,
+		// macOS는 트레이로 HUD를 다시 띄울 수 있어 닫기=숨김(HideWindowOnClose:true)이 맞다.
+		// Windows는 트레이가 stub이라 닫으면 되살릴 수단이 없다 → 닫기=종료로 두어야 앱과
+		// 자식 프로세스가 정상 정리된다(닫아도 숨기만 하면 프로세스가 계속 남는 문제 해결).
+		HideWindowOnClose: hudHideOnClose,
 		BackgroundColour:  &options.RGBA{R: 0, G: 0, B: 0, A: 0},
 		AssetServer: &assetserver.Options{
 			Assets: subFS("controller"),

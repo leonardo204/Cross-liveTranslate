@@ -156,11 +156,15 @@ SIG=$(base64 < "${DMG_PATH}.minisig" | tr -d '\n')
 [[ -n "$SIG" ]] || die ".minisig 내용이 비어있습니다"
 log "[sign] 서명 완료"
 
-# ── 5b. Windows 인스톨러 빌드 + 서명 (mingw 있을 때만; SKIP_WINDOWS=1로 생략) ──
-# macOS에서 mingw-w64로 Windows(amd64) 크로스컴파일 → NSIS 인스톨러 → minisign 서명.
-# latest.json의 windows-x86_64 항목과 업로드 자산에 포함된다(updater가 인스톨러 exe를 실행).
-WIN_INSTALLER_NAME=""
-WIN_SIG=""
+# ── 5b. Windows 빌드 + 서명 (mingw 있을 때만; SKIP_WINDOWS=1로 생략) ──
+# macOS에서 mingw-w64로 Windows(amd64) 크로스컴파일. 두 산출물을 만든다:
+#   • 포터블 exe    → 자동 업데이트 자산(latest.json windows-x86_64). self-apply 경로가
+#                     파일 잠금 해제를 기다렸다 덮어쓰고 **재실행**한다(인스톨러는 /S 사일런트가
+#                     재실행을 안 하고 자식 프로세스 잠금으로 실패했음 — 관측된 버그).
+#   • NSIS 인스톨러 → 최초 수동 설치용 릴리스 자산(바로가기/WebView2 런타임 설치).
+WIN_PORTABLE_NAME=""   # 자동 업데이트 자산(포터블)
+WIN_INSTALLER_NAME=""  # 수동 설치 자산(인스톨러)
+WIN_SIG=""             # 포터블 exe의 minisign 서명(latest.json용)
 WIN_CC="${WIN_CC:-x86_64-w64-mingw32-gcc}"
 if [[ "${SKIP_WINDOWS:-0}" != "1" ]] && command -v "$WIN_CC" >/dev/null 2>&1; then
   log "[win] wails build windows/amd64 (netgo, cgo via mingw)"
@@ -169,7 +173,7 @@ if [[ "${SKIP_WINDOWS:-0}" != "1" ]] && command -v "$WIN_CC" >/dev/null 2>&1; th
     rm -f "$ROOT/build/windows/icon.ico"
   fi
   win_nsis=""
-  command -v makensis >/dev/null 2>&1 && win_nsis="-nsis" || warn "makensis 없음 — Windows 인스톨러 스킵(포터블 exe만)"
+  command -v makensis >/dev/null 2>&1 && win_nsis="-nsis" || warn "makensis 없음 — 인스톨러 스킵(포터블만)"
   CGO_ENABLED=1 CC="$WIN_CC" CXX="${WIN_CXX:-x86_64-w64-mingw32-g++}" \
     PATH="$PATH_WITH_GO:/opt/homebrew/bin" wails build \
       -platform windows/amd64 \
@@ -177,23 +181,24 @@ if [[ "${SKIP_WINDOWS:-0}" != "1" ]] && command -v "$WIN_CC" >/dev/null 2>&1; th
       -ldflags "-X main.appVersion=${VERSION}" \
       $win_nsis || die "Windows 빌드 실패"
 
-  # 인스톨러 우선(설치형), 없으면 포터블 exe. 버전명으로 리네임해 릴리스 자산명을 명확히 한다.
-  win_src=$(ls "$BIN"/*installer*.exe 2>/dev/null | head -1 || true)
-  if [[ -n "$win_src" ]]; then
-    WIN_INSTALLER_NAME="Cross-liveTranslate_${VERSION}_windows_amd64_installer.exe"
-  else
-    win_src=$(ls "$BIN"/*.exe 2>/dev/null | grep -v installer | head -1 || true)
-    [[ -n "$win_src" ]] && WIN_INSTALLER_NAME="Cross-liveTranslate_${VERSION}_windows_amd64.exe"
-  fi
-  [[ -n "$win_src" ]] || die "Windows 산출물(.exe)을 찾지 못했습니다 ($BIN)"
-  WIN_PATH="$DIST/$WIN_INSTALLER_NAME"
-  cp "$win_src" "$WIN_PATH"
-  log "[win] 산출물: $WIN_INSTALLER_NAME"
+  # 포터블 exe(자동 업데이트 자산). 파일명에 "installer"가 없어야 updater가 self-apply로 처리한다.
+  win_portable=$(ls "$BIN"/*.exe 2>/dev/null | grep -v installer | head -1 || true)
+  [[ -n "$win_portable" ]] || die "Windows 포터블 exe를 찾지 못했습니다 ($BIN)"
+  WIN_PORTABLE_NAME="Cross-liveTranslate_${VERSION}_windows_amd64.exe"
+  WIN_PORTABLE_PATH="$DIST/$WIN_PORTABLE_NAME"
+  cp "$win_portable" "$WIN_PORTABLE_PATH"
+  sign_minisign "$WIN_PORTABLE_PATH"
+  WIN_SIG=$(base64 < "${WIN_PORTABLE_PATH}.minisig" | tr -d '\n')
+  [[ -n "$WIN_SIG" ]] || die "Windows 포터블 .minisig 내용이 비어있습니다"
+  log "[win] 포터블(자동 업데이트용): $WIN_PORTABLE_NAME"
 
-  sign_minisign "$WIN_PATH"
-  WIN_SIG=$(base64 < "${WIN_PATH}.minisig" | tr -d '\n')
-  [[ -n "$WIN_SIG" ]] || die "Windows .minisig 내용이 비어있습니다"
-  log "[win] 서명 완료"
+  # NSIS 인스톨러(수동 설치용, 선택). latest.json에는 넣지 않는다(자동 업데이트는 포터블 self-apply).
+  win_inst=$(ls "$BIN"/*installer*.exe 2>/dev/null | head -1 || true)
+  if [[ -n "$win_inst" ]]; then
+    WIN_INSTALLER_NAME="Cross-liveTranslate_${VERSION}_windows_amd64_installer.exe"
+    cp "$win_inst" "$DIST/$WIN_INSTALLER_NAME"
+    log "[win] 인스톨러(수동 설치용): $WIN_INSTALLER_NAME"
+  fi
 else
   warn "Windows 빌드 스킵(mingw 부재 또는 SKIP_WINDOWS=1) — latest.json은 macOS만 포함"
 fi
@@ -201,7 +206,8 @@ fi
 # ── 6. latest.json 생성 ────────────────────────────────────────────────────
 LATEST="$DIST/latest.json"
 DMG_URL="https://github.com/${GH_REPO}/releases/download/${TAG}/${DMG_NAME}"
-WIN_URL="https://github.com/${GH_REPO}/releases/download/${TAG}/${WIN_INSTALLER_NAME}"
+# latest.json은 자동 업데이트용 포터블 exe를 가리킨다(self-apply가 재실행까지 수행).
+WIN_URL="https://github.com/${GH_REPO}/releases/download/${TAG}/${WIN_PORTABLE_NAME}"
 
 log "[manifest] $LATEST"
 {
@@ -251,10 +257,11 @@ if [[ "$GH_UPLOAD" -eq 1 ]]; then
     log "[gh] release 이미 존재: $TAG — 자산만 업로드"
   fi
 
-  # 업로드 자산: macOS DMG + latest.json (+ Windows 인스톨러가 있으면 함께).
+  # 업로드 자산: macOS DMG + latest.json (+ Windows 포터블/인스톨러가 있으면 함께).
   UPLOAD_ASSETS=("$DMG_PATH" "$LATEST")
+  [[ -n "$WIN_PORTABLE_NAME"  && -f "$DIST/$WIN_PORTABLE_NAME"  ]] && UPLOAD_ASSETS+=("$DIST/$WIN_PORTABLE_NAME")
   [[ -n "$WIN_INSTALLER_NAME" && -f "$DIST/$WIN_INSTALLER_NAME" ]] && UPLOAD_ASSETS+=("$DIST/$WIN_INSTALLER_NAME")
-  log "[gh] 자산 업로드: $(basename "$DMG_PATH")${WIN_INSTALLER_NAME:+ + $WIN_INSTALLER_NAME} + latest.json"
+  log "[gh] 자산 업로드: $(basename "$DMG_PATH")${WIN_PORTABLE_NAME:+ + $WIN_PORTABLE_NAME}${WIN_INSTALLER_NAME:+ + $WIN_INSTALLER_NAME} + latest.json"
   gh release upload "$TAG" \
     --repo "$GH_REPO" \
     "${UPLOAD_ASSETS[@]}" \

@@ -151,6 +151,13 @@ func (a *App) DownloadAndInstallUpdate() error {
 	// Give the detached helper a moment to start before we quit.
 	go func() {
 		time.Sleep(300 * time.Millisecond)
+		// 자식 프로세스(overlay/settings)를 먼저 정리한다. Windows에서는 세 프로세스가 모두
+		// 같은 .exe 파일을 잠그므로(실행 중 exe는 덮어쓰기 불가), 자식이 남으면 self-apply
+		// helper가 파일 교체를 못 해 무한 대기하고 재실행도 안 된다(관측된 버그: 프로세스 잔존).
+		// os.Exit는 OnShutdown을 건너뛰므로 여기서 명시적으로 죽인다(shutdown은 멱등).
+		if a.ctrl != nil {
+			a.ctrl.shutdown()
+		}
 		if a.ctx != nil {
 			wailsruntime.Quit(a.ctx)
 		}

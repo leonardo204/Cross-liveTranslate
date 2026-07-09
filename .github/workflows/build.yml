@@ -1,12 +1,13 @@
 name: build
 
 # 빌드 검증 — mac 네이티브 + Windows 크로스컴파일(순수 Go, cgo 미사용 단계 기준).
-# 릴리스/서명/배포는 scripts/release.sh + add-windows-asset.sh 참조(마스터 플랜 §4~5).
+#
+# 자동 실행(push/PR) 비활성: 이 프로젝트는 릴리스/빌드를 모두 로컬에서 수동으로 한다
+# (scripts/release.sh가 vet·build·test·서명·공증·업로드를 자체 수행하고, 커밋 전 로컬에서
+# 검증한다). CI를 push마다 돌리면 환경 차이로 실패해 알림 메일만 쌓이므로, 수동 트리거
+# (Actions 탭 "Run workflow")로만 돌린다. 자동 검증이 다시 필요하면 push/pull_request를 되살린다.
 on:
-  push:
-    branches: [main]
-  pull_request:
-    branches: [main]
+  workflow_dispatch:
 
 jobs:
   verify:

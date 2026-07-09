@@ -4,7 +4,10 @@ package overlay
 
 /*
 #cgo CXXFLAGS: -std=c++11 -DUNICODE -D_UNICODE -Wall
-#cgo LDFLAGS: -static-libgcc -static-libstdc++ -lgdiplus -lgdi32 -luser32 -lole32 -l:libstdc++.a
+// -static: mingw 런타임(libgcc/libstdc++/libwinpthread)을 전부 정적 링크한다. 이게 없으면
+// 포터블 exe가 libwinpthread-1.dll을 못 찾아 실행되지 않는다(관측된 버그). 시스템 DLL
+// (gdiplus/gdi32/user32/ole32, UCRT)은 import lib라 영향 없이 동적 임포트로 남는다.
+#cgo LDFLAGS: -static -lgdiplus -lgdi32 -luser32 -lole32 -lstdc++ -lgcc -lpthread
 #include <stdlib.h>
 #include "native_windows.h"
 */

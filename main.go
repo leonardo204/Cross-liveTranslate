@@ -297,6 +297,16 @@ func parseControllerFlags() controllerFlags {
 // the click-through, screen-saver level, clear background, and monitor cover
 // are stamped natively in OnDomReady via internal/overlay.Apply.
 func runOverlay() {
+	// Windows: WebView2 per-pixel transparency is broken on Windows 10 (the
+	// overlay renders as an opaque/black rectangle). Bypass Wails entirely and
+	// draw the subtitle with a native Win32 layered window (UpdateLayeredWindow
+	// + GDI+ premultiplied ARGB — true per-pixel alpha). This never returns
+	// until the overlay window is destroyed. macOS keeps the WebView2 path below.
+	if runtime.GOOS == "windows" {
+		overlay.RunNativeWindows()
+		return
+	}
+
 	app := NewApp()
 
 	err := wails.Run(&options.App{

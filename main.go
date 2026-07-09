@@ -315,13 +315,14 @@ func runOverlay() {
 			WindowIsTranslucent:  false,
 		},
 		Windows: &windows.Options{
+			// per-pixel 투명(자막만 보이고 나머지 완전 투명)의 정석 경로:
+			// WebviewIsTransparent:true + 창 배경색 알파 0(BackgroundColour A:0). WebView2가
+			// DirectComposition으로 픽셀 단위 알파를 합성한다.
+			// WindowIsTranslucent는 DWM BlurBehind/Acrylic backdrop을 켜 화면이 뿌옇게(blur)
+			// 되므로 반드시 끈다(Windows 실측: translucent=true → blur). Wails 문서 기준.
 			WebviewIsTransparent: true,
-			// 창 자체를 투명하게 한다. WebviewIsTransparent만으로는 webview만 투명하고 창
-			// 배경은 불투명(검정)으로 남아 오버레이가 화면을 까맣게 덮는다(Windows 실측 버그).
-			// WindowIsTranslucent + BackdropType:None으로 블러 없는 클리어 투명을 만든다.
-			WindowIsTranslucent: true,
-			BackdropType:        windows.None,
-			WindowClassName:     overlay.WindowClassName,
+			WindowIsTranslucent:  false,
+			WindowClassName:      overlay.WindowClassName,
 		},
 		OnStartup: func(ctx context.Context) {
 			app.startup(ctx)

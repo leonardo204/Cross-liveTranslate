@@ -14,6 +14,17 @@
 //
 // bypass: WrapSource(src, enabled=false)면 게이트를 끼우지 않고 원본을 그대로 반환한다
 // (전부 통과). 순수 상태머신이므로 로드 실패 개념이 없다.
+//
+// # 두 가지 소비자
+//
+// 이 패키지에는 같은 프레임 RMS를 쓰지만 목적과 파라미터가 다른 판정이 둘 있다.
+//
+//   - 게이팅(gate.go) — "무엇을 서버로 보낼지". 고정 임계(0.01) + 여운 750ms + pre-roll로
+//     첫·끝 음절을 보존한다. 전송량/비용 계약이라 파라미터를 바꾸지 않는다.
+//   - 관찰(observer.go) — "화자가 언제 바뀌었을지". 적응형 노이즈 플로어 + 여운 300ms로
+//     대화 갭(200~600ms)을 잡아낸다. 오디오를 막거나 변형하지 않는다(observe-only).
+//
+// source.go의 래퍼가 청크당 RMS를 한 번만 계산해 둘에게 나눠 준다(이중 계산 없음).
 package vad
 
 import (
@@ -65,8 +76,8 @@ type Gate struct {
 	cfg Config
 
 	speaking  bool
-	hangover  int         // 남은 여운 프레임 수(speaking일 때만 의미)
-	speechRun int         // 연속 고에너지 프레임 수(onset 확정 카운터)
+	hangover  int           // 남은 여운 프레임 수(speaking일 때만 의미)
+	speechRun int           // 연속 고에너지 프레임 수(onset 확정 카운터)
 	preRoll   []audio.Chunk // 최근 저에너지 프레임(최대 PreRollFrames개, onset 시 flush)
 	pending   []audio.Chunk // onset 확정 전 버퍼링한 고에너지 프레임(확정 시 flush)
 }
@@ -81,7 +92,14 @@ func (g *Gate) Speaking() bool { return g.speaking }
 // current speaking state. 무음/소음은 빈 forward를 반환한다. onset 확정 시 pre-roll +
 // 버퍼링된 onset 프레임을 함께 반환해 첫 음절을 보존한다.
 func (g *Gate) Process(chunk audio.Chunk) (forward []audio.Chunk, speaking bool) {
-	loud := rms(chunk) >= g.cfg.RMSThreshold
+	return g.processWithRMS(chunk, rms(chunk))
+}
+
+// processWithRMS 는 이미 계산된 RMS로 Process를 수행한다. 같은 청크를 게이팅과 관찰
+// (Observer)이 함께 볼 때 RMS를 두 번 계산하지 않기 위한 내부 경로다 — 게이팅 판정 로직과
+// 파라미터(임계 0.01, hangover 750ms)는 Process와 완전히 동일하다.
+func (g *Gate) processWithRMS(chunk audio.Chunk, level float32) (forward []audio.Chunk, speaking bool) {
+	loud := level >= g.cfg.RMSThreshold
 
 	if g.speaking {
 		if loud {

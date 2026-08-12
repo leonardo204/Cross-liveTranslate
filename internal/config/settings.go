@@ -49,6 +49,7 @@ type SubtitleSettings struct {
 	FontSize      float64 `json:"fontSize"`      // pt, UI 16..72, 기본 34.
 	FontWeight    string  `json:"fontWeight"`    // regular|medium|semibold|bold|heavy|black.
 	TextColor     string  `json:"textColor"`     // #RRGGBBAA.
+	AltTextColor  string  `json:"altTextColor"`  // #RRGGBBAA — 화자 교대 2색 중 보조 색(설정 UI 미노출).
 	StrokeEnabled bool    `json:"strokeEnabled"` // 외곽선(그림자) 사용.
 	StrokeColor   string  `json:"strokeColor"`   // #RRGGBBAA.
 	StrokeWidth   float64 `json:"strokeWidth"`   // 외곽선 두께 힌트(원본은 고정 다중그림자, Wave2 사용).
@@ -60,6 +61,11 @@ type SubtitleSettings struct {
 	BgOpacity     float64 `json:"bgOpacity"`     // 0..1, 기본 0.35.
 	Align         string  `json:"align"`         // leading|center|trailing.
 	MaxLines      int     `json:"maxLines"`      // UI 1..4, 기본 2.
+
+	// SpeakerColorAlternate 는 화자 전환 근사(turnComplete/무음 2초) 2색 교대 표시의
+	// 숨은 스위치다(기본 true). 설정 UI에는 노출하지 않는다(원본 UI 100% 재현 원칙) —
+	// settings.json을 직접 편집해 false로 두면 기존 단색 표시로 돌아간다.
+	SpeakerColorAlternate bool `json:"speakerColorAlternate"`
 }
 
 // PositionSettings holds subtitle placement (원본 subtitle.screenID + verticalPosition
@@ -96,6 +102,46 @@ type VADSettings struct {
 	Enabled bool `json:"enabled"` // 기본 false(미배선 — Wave 3에서 활성).
 }
 
+// 엔진 튜닝 기본값/마이그레이션 상수.
+const (
+	// DefaultAudioBoundarySilenceMs 는 오디오 도메인 화자 경계 임계 기본값(ms).
+	DefaultAudioBoundarySilenceMs = 400
+	// legacyAudioBoundarySilenceMs 는 이전 기본값이다. 이 키는 설정 UI에 노출된 적이 없어
+	// 사용자가 직접 넣었을 수 없고(설정 창이 전체 구조를 되저장하면서 기본값이 파일에
+	// 박힌다), 그 값이 그대로 남아 있으면 새 기본값이 영영 적용되지 않는다.
+	// 그래서 Load 시 **옛 기본값과 정확히 같을 때만** 새 기본값으로 1회 마이그레이션한다.
+	legacyAudioBoundarySilenceMs = 700
+)
+
+// EngineSettings holds subtitle-engine 튜닝값이다. 설정 UI에 노출하지 않는 숨은 설정만
+// 모으며(스타일이 아니므로 subtitle 블록과 분리 — STYLE_DEFAULT 동기화 대상이 아니다),
+// settings.json을 직접 편집해 조정한다.
+type EngineSettings struct {
+	// TurnBoundarySilenceMs 는 델타 갭이 이만큼(ms) 벌어지면 발화(턴)가 끊긴 것으로 보고
+	// 자막 줄을 확정 + 화자 색을 교대하는 임계다(기본 1000).
+	//
+	// 근거(실측): gemini-3.5-live-translate는 turnComplete를 보내지 않아 경계 신호가 없다.
+	// 수신 델타 간격은 연속 발화 중 0.8~0.9s에 몰리고 실제 발화 경계는 1.0~1.7s에 나타나
+	// 0.9s/1.0s 사이에 절벽이 있다.
+	//
+	// **0 이하 = 이 트리거 비활성**(기존 2초 무음 확정 동작으로 폴백). 키가 아예 없으면
+	// Load()가 DefaultSettings() 위에 덮어쓰므로 기본 1000이 유지된다(0으로 죽지 않는다).
+	TurnBoundarySilenceMs int `json:"turnBoundarySilenceMs"`
+
+	// AudioBoundarySilenceMs 는 **오디오 도메인** 화자 경계 임계다(기본 700).
+	// 캡처 오디오의 실무음이 이만큼(ms) 지속된 뒤 새 발화가 시작되면 화자가 바뀐 것으로 보고
+	// 자막 줄을 확정 + 색을 교대한다. 텍스트 델타 갭(turnBoundarySilenceMs)과 달리 서버
+	// 스트리밍 주기·원문/번역 인터리빙의 영향을 받지 않아 1차 트리거로 쓴다.
+	//
+	// **0 이하 = 오디오 경계 관찰 비활성**(델타 갭 트리거만 남는다). 키가 없으면 기본값 유지.
+	AudioBoundarySilenceMs int `json:"audioBoundarySilenceMs"`
+
+	// QuestionBoundary 는 "물음표로 끝난 줄 뒤에 새 델타가 오면 질문→답변 전환" 휴리스틱
+	// 스위치다(기본 true, 설정 UI 미노출). 인터뷰/대화에서 오디오 무음만으로는 놓치는
+	// 화자 교대를 텍스트로 보완한다. 키가 없으면 Load가 기본값(true) 위에 덮어쓰므로 켜진 상태다.
+	QuestionBoundary bool `json:"questionBoundary"`
+}
+
 // UpdateSettings holds auto-update-check preference (원본 Sparkle SUEnableAutomaticChecks).
 // 원본 liveTranslate는 Info.plist SUEnableAutomaticChecks=true + SUScheduledCheckInterval=86400
 // 으로 앱 실행 시 + 24시간 주기 자동 확인을 하며, 사용자 토글(automaticallyChecksForUpdates)로
@@ -115,6 +161,7 @@ type Settings struct {
 	Cost      CostSettings      `json:"cost"`
 	Recording RecordingSettings `json:"recording"`
 	VAD       VADSettings       `json:"vad"`
+	Engine    EngineSettings    `json:"engine"`
 	Update    UpdateSettings    `json:"update"`
 }
 
@@ -137,6 +184,7 @@ func DefaultSettings() Settings {
 			FontSize:      34.0,        // StyleDefault.fontSize
 			FontWeight:    "bold",      // StyleDefault.weight
 			TextColor:     "#FFFFFFFF", // StyleDefault.textColorHex
+			AltTextColor:  "#FFD866FF", // 화자 교대 보조 색(흰색 대비 가독 유지되는 부드러운 노랑).
 			StrokeEnabled: true,        // StyleDefault.strokeEnabled
 			StrokeColor:   "#000000E6", // StyleDefault.strokeColorHex
 			StrokeWidth:   2.0,         // 원본은 고정 다중그림자(1/3/6); Wave2 힌트값.
@@ -148,6 +196,8 @@ func DefaultSettings() Settings {
 			BgOpacity:     0.35,        // StyleDefault.backgroundOpacity
 			Align:         "center",    // StyleDefault.align
 			MaxLines:      2,           // StyleDefault.maxLines
+
+			SpeakerColorAlternate: true, // 화자 전환 근사 2색 교대 기본 on(UI 미노출).
 		},
 		Position: PositionSettings{
 			MonitorIndex: 0,        // 주 화면(원본 subtitleScreenID nil 폴백)
@@ -170,6 +220,16 @@ func DefaultSettings() Settings {
 		},
 		VAD: VADSettings{
 			Enabled: true, // 원본 VAD 기본 on(발화 구간만 전송해 비용 절감). 끄면 전 구간 통과.
+		},
+		Engine: EngineSettings{
+			// 1000ms — 실측 델타 갭 분포의 절벽(연속 발화 0.8~0.9s vs 발화 경계 1.0~1.7s).
+			// 오디오 경계(아래)가 1차 트리거이고 이 값은 백업으로 남는다.
+			TurnBoundarySilenceMs: 1000,
+			// 400ms — 실측상 대화 중 화자 교대 갭은 200~600ms에 분포한다(700ms는 1.4s급
+			// 긴 쉼만 잡아 3.5분 세션에서 경계가 3건뿐이었다). 관찰 여운도 300ms로 줄였다.
+			AudioBoundarySilenceMs: DefaultAudioBoundarySilenceMs,
+			// 물음표 휴리스틱 기본 on(질문→답변 전환은 무음이 짧아도 화자가 바뀐다).
+			QuestionBoundary: true,
 		},
 		Update: UpdateSettings{
 			AutoCheck: true, // 원본 SUEnableAutomaticChecks=true — 기본 자동 확인 on.
@@ -227,7 +287,19 @@ func Load() (Settings, error) {
 		log.Printf("[config] settings.json 손상 — 기본값으로 폴백: %v", err)
 		return DefaultSettings(), nil
 	}
-	return s, nil
+	return migrate(s), nil
+}
+
+// migrate 는 저장된 설정을 현재 스키마/기본값에 맞춘다(로드 경로 전용, 파일은 건드리지 않는다).
+// 숨은 튜닝 키는 설정 UI가 전체 구조를 되저장하면서 **옛 기본값이 파일에 박히기** 때문에,
+// 값이 옛 기본값과 정확히 같을 때만 새 기본값으로 올린다(사용자가 직접 바꾼 값은 보존).
+func migrate(s Settings) Settings {
+	if s.Engine.AudioBoundarySilenceMs == legacyAudioBoundarySilenceMs {
+		log.Printf("[config] engine.audioBoundarySilenceMs %d → %d 로 갱신(옛 기본값 → 새 기본값)",
+			legacyAudioBoundarySilenceMs, DefaultAudioBoundarySilenceMs)
+		s.Engine.AudioBoundarySilenceMs = DefaultAudioBoundarySilenceMs
+	}
+	return s
 }
 
 // Save writes settings.json atomically (temp file + rename). 디렉토리는 없으면 생성한다.

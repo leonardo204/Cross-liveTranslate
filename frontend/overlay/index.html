@@ -108,6 +108,7 @@
         fontSize: 34,
         fontWeight: "bold",
         textColor: "#FFFFFFFF",
+        altTextColor: "#FFD866FF",
         strokeEnabled: true,
         strokeColor: "#000000E6",
         strokeWidth: 2,
@@ -123,7 +124,7 @@
         vertical: "bottom",
         offset: 0.5,
       };
-      let lastSubtitle = { lines: [], visible: false, source: "" };
+      let lastSubtitle = { lines: [], speakers: [], visible: false, source: "" };
 
       // Weight name → CSS numeric (원본 SubtitleFontWeight 매핑).
       const WEIGHTS = {
@@ -220,14 +221,18 @@
       }
 
       // Apply per-line text style to one element (main or source line).
-      function applyLineStyle(el, isSource) {
+      // speaker: 화자 패리티(0/1) — 1이면 보조 색(altTextColor)으로 그린다. 턴 경계
+      // (turnComplete/무음 2초)로 근사한 화자 전환을 2색 교대로 보여주기 위함.
+      // 원문(source) 줄은 교대 대상이 아니라 항상 기본 색이다.
+      function applyLineStyle(el, isSource, speaker) {
         el.style.fontFamily = style.fontFamily
           ? '"' + style.fontFamily + '", ' + SYSTEM_FONT
           : SYSTEM_FONT;
         const size = isSource ? style.fontSize * 0.65 : style.fontSize;
         el.style.fontSize = size + "px";
         el.style.fontWeight = WEIGHTS[style.fontWeight] || 700;
-        el.style.color = rgba(style.textColor);
+        const useAlt = !isSource && speaker === 1 && style.altTextColor;
+        el.style.color = rgba(useAlt ? style.altTextColor : style.textColor);
         el.style.webkitTextStroke = style.strokeEnabled
           ? Math.max(0, style.strokeWidth) + "px " + rgba(style.strokeColor)
           : "0";
@@ -241,22 +246,26 @@
         // maxLines: keep the last N (원본 roll-up: 오래된 위쪽 줄을 버리고 최근 N줄).
         const maxLines = Math.max(1, style.maxLines | 0);
         const lines = allLines.slice(-maxLines);
+        // 화자 패리티는 잘려나간 앞부분만큼 오프셋을 줘 원래 줄과 인덱스를 맞춘다
+        // (배열이 없거나 짧으면 해당 줄은 0=기본 색).
+        const allSpeakers = Array.isArray(p.speakers) ? p.speakers : [];
+        const spOffset = Math.max(0, allLines.length - lines.length);
         const visible = p.visible !== false;
         const source = typeof p.source === "string" ? p.source : "";
 
         box.textContent = "";
-        for (const text of lines) {
+        for (let i = 0; i < lines.length; i++) {
           const el = document.createElement("div");
           el.className = "line";
-          el.textContent = text;
-          applyLineStyle(el, false);
+          el.textContent = lines[i];
+          applyLineStyle(el, false, allSpeakers[spOffset + i] === 1 ? 1 : 0);
           box.appendChild(el);
         }
         if (source) {
           const el = document.createElement("div");
           el.className = "line source";
           el.textContent = source;
-          applyLineStyle(el, true);
+          applyLineStyle(el, true, 0);
           box.appendChild(el);
         }
 
@@ -273,6 +282,7 @@
       function onSubtitle(payload) {
         lastSubtitle = {
           lines: payload && Array.isArray(payload.lines) ? payload.lines : [],
+          speakers: payload && Array.isArray(payload.speakers) ? payload.speakers : [],
           visible: !payload || payload.visible !== false,
           source: payload && typeof payload.source === "string" ? payload.source : "",
         };

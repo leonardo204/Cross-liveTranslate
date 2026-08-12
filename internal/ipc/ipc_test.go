@@ -188,3 +188,49 @@ func TestLongLine(t *testing.T) {
 		t.Fatalf("long line did not round-trip (got %d msgs)", len(got))
 	}
 }
+
+// TestSubtitleSpeakersRoundTrip pins the 화자 패리티 wire 계약: Speakers는 Lines와 같은
+// 길이로 왕복하고, 없으면(omitempty) 라인에서 사라져 구버전 오버레이가 그대로 읽는다.
+func TestSubtitleSpeakersRoundTrip(t *testing.T) {
+	m := SubtitleMsg{
+		Lines:    []string{"첫 화자 줄", "둘째 화자 줄"},
+		Speakers: []int{0, 1},
+		Visible:  true,
+	}
+	var buf bytes.Buffer
+	if err := WriteSubtitle(&buf, m); err != nil {
+		t.Fatalf("WriteSubtitle: %v", err)
+	}
+	line := buf.String()
+	if !strings.Contains(line, `"speakers":[0,1]`) {
+		t.Fatalf("wire line missing speakers: %s", line)
+	}
+
+	var got SubtitleMsg
+	Dispatch(strings.NewReader(line), Handler{OnSubtitle: func(x SubtitleMsg) { got = x }})
+	if !reflect.DeepEqual(got, m) {
+		t.Fatalf("round trip = %#v, want %#v", got, m)
+	}
+
+	// Speakers 없이 보내면 라인에 필드가 없고, 읽는 쪽은 nil(=전부 0)로 받는다.
+	buf.Reset()
+	if err := WriteSubtitle(&buf, SubtitleMsg{Lines: []string{"단색"}, Visible: true}); err != nil {
+		t.Fatalf("WriteSubtitle: %v", err)
+	}
+	if strings.Contains(buf.String(), "speakers") {
+		t.Fatalf("empty speakers should be omitted, got %s", buf.String())
+	}
+}
+
+// TestStyleAltTextColorRoundTrip verifies the 보조 색이 style 라인으로 전달되는지.
+func TestStyleAltTextColorRoundTrip(t *testing.T) {
+	var buf bytes.Buffer
+	if err := WriteStyle(&buf, StyleMsg{TextColor: "#FFFFFFFF", AltTextColor: "#FFD866FF"}); err != nil {
+		t.Fatalf("WriteStyle: %v", err)
+	}
+	var got StyleMsg
+	Dispatch(strings.NewReader(buf.String()), Handler{OnStyle: func(m StyleMsg) { got = m }})
+	if got.AltTextColor != "#FFD866FF" {
+		t.Fatalf("AltTextColor = %q, want %q (line: %s)", got.AltTextColor, "#FFD866FF", buf.String())
+	}
+}

@@ -29,13 +29,17 @@ const (
 
 // SubtitleMsg is a single subtitle snapshot pushed controller → overlay.
 //
-//	Lines   — roll-up 확정 줄 + 진행 중 줄(위→아래 표시 순서).
-//	Source  — 진행 중 원문(원문 동시 표시가 켜졌을 때만 비어있지 않음).
-//	Visible — 자막을 화면에 보여야 하는지(false면 오버레이 숨김).
+//	Lines    — roll-up 확정 줄 + 진행 중 줄(위→아래 표시 순서).
+//	Speakers — 줄별 화자 패리티(0/1). Lines와 같은 길이. 턴 경계(turnComplete/무음 2초)로
+//	           근사한 화자 전환을 렌더러가 2색 교대로 표시하는 데만 쓴다. 비어 있으면
+//	           전부 0(단색)으로 간주한다 — 구버전 오버레이/메시지 하위호환.
+//	Source   — 진행 중 원문(원문 동시 표시가 켜졌을 때만 비어있지 않음).
+//	Visible  — 자막을 화면에 보여야 하는지(false면 오버레이 숨김).
 type SubtitleMsg struct {
-	Lines   []string `json:"lines"`
-	Source  string   `json:"source,omitempty"`
-	Visible bool     `json:"visible"`
+	Lines    []string `json:"lines"`
+	Speakers []int    `json:"speakers,omitempty"`
+	Source   string   `json:"source,omitempty"`
+	Visible  bool     `json:"visible"`
 }
 
 // StyleMsg carries the subtitle rendering style + placement pushed controller →
@@ -47,6 +51,7 @@ type StyleMsg struct {
 	FontSize      float64 `json:"fontSize"`      // pt→px.
 	FontWeight    string  `json:"fontWeight"`    // regular|medium|semibold|bold|heavy|black.
 	TextColor     string  `json:"textColor"`     // #RRGGBBAA.
+	AltTextColor  string  `json:"altTextColor"`  // #RRGGBBAA — 화자 패리티 1 줄의 보조 색.
 	StrokeEnabled bool    `json:"strokeEnabled"` // 외곽선(다중 그림자).
 	StrokeColor   string  `json:"strokeColor"`   // #RRGGBBAA.
 	StrokeWidth   float64 `json:"strokeWidth"`   // -webkit-text-stroke 두께(px).

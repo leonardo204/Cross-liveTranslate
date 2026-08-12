@@ -56,15 +56,19 @@ func readNativeIPC() {
 		OnSubtitle: func(m ipc.SubtitleMsg) {
 			// Join lines with '\n'; the C++ side splits and applies maxLines.
 			cLines := C.CString(strings.Join(m.Lines, "\n"))
+			// 화자 패리티는 줄 수와 같은 길이의 '0'/'1' 문자열로 넘긴다(줄 인덱스 정렬).
+			cSpeakers := C.CString(speakerBits(m))
 			cSource := C.CString(m.Source)
-			C.lt_native_update_subtitle(cLines, cSource, cBool(m.Visible))
+			C.lt_native_update_subtitle(cLines, cSpeakers, cSource, cBool(m.Visible))
 			C.free(unsafe.Pointer(cLines))
+			C.free(unsafe.Pointer(cSpeakers))
 			C.free(unsafe.Pointer(cSource))
 		},
 		OnStyle: func(m ipc.StyleMsg) {
 			cFontFamily := C.CString(m.FontFamily)
 			cFontWeight := C.CString(m.FontWeight)
 			cTextColor := C.CString(m.TextColor)
+			cAltTextColor := C.CString(m.AltTextColor)
 			cStrokeColor := C.CString(m.StrokeColor)
 			cGlowColor := C.CString(m.GlowColor)
 			cBgColor := C.CString(m.BgColor)
@@ -72,7 +76,7 @@ func readNativeIPC() {
 			cVertical := C.CString(m.Vertical)
 			C.lt_native_update_style(
 				cFontFamily, C.double(m.FontSize), cFontWeight,
-				cTextColor,
+				cTextColor, cAltTextColor,
 				cBool(m.StrokeEnabled), cStrokeColor, C.double(m.StrokeWidth),
 				cBool(m.GlowEnabled), cGlowColor, C.double(m.GlowRadius),
 				cBool(m.BgEnabled), cBgColor, C.double(m.BgOpacity),
@@ -82,6 +86,7 @@ func readNativeIPC() {
 			C.free(unsafe.Pointer(cFontFamily))
 			C.free(unsafe.Pointer(cFontWeight))
 			C.free(unsafe.Pointer(cTextColor))
+			C.free(unsafe.Pointer(cAltTextColor))
 			C.free(unsafe.Pointer(cStrokeColor))
 			C.free(unsafe.Pointer(cGlowColor))
 			C.free(unsafe.Pointer(cBgColor))
@@ -89,6 +94,24 @@ func readNativeIPC() {
 			C.free(unsafe.Pointer(cVertical))
 		},
 	})
+}
+
+// speakerBits renders the per-line 화자 패리티를 '0'/'1' ASCII 문자열로 만든다.
+// 길이는 항상 len(m.Lines)와 같아 C++ 쪽 splitLines 결과와 인덱스가 1:1로 맞는다.
+// Speakers가 없거나 짧으면 해당 줄은 '0'(기본 색)이다.
+func speakerBits(m ipc.SubtitleMsg) string {
+	if len(m.Lines) == 0 {
+		return ""
+	}
+	b := make([]byte, len(m.Lines))
+	for i := range m.Lines {
+		if i < len(m.Speakers) && m.Speakers[i]&1 == 1 {
+			b[i] = '1'
+		} else {
+			b[i] = '0'
+		}
+	}
+	return string(b)
 }
 
 // cBool maps a Go bool to the C int (0/1) the native layer expects.

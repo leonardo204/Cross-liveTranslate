@@ -17,6 +17,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"log"
 	"math"
@@ -29,8 +30,8 @@ import (
 	"time"
 
 	"cross-livetranslate/internal/app"
-	"cross-livetranslate/internal/childproc"
 	"cross-livetranslate/internal/audio"
+	"cross-livetranslate/internal/childproc"
 	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/cost"
 	"cross-livetranslate/internal/gemini"
@@ -40,6 +41,7 @@ import (
 	"cross-livetranslate/internal/recording"
 	"cross-livetranslate/internal/subtitle"
 	"cross-livetranslate/internal/tray"
+	"cross-livetranslate/internal/txlog"
 	"cross-livetranslate/internal/vad"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -105,6 +107,13 @@ type Controller struct {
 	// sentSamples는 VAD 게이트를 통과해 실제 송신된 16kHz mono 샘플 누적(입력 비용 근거).
 	// countingSource(오디오 dispatch goroutine)가 더하고 runLoop tick이 델타를 소비한다.
 	sentSamples atomic.Int64
+	// boundaryPending 는 오디오 도메인 VAD 옵저버가 감지한 화자 경계 래치다.
+	// 오디오 dispatch goroutine이 set하고 runLoop가 다음 번역 delta 직전에 소비(Swap)한다.
+	// bool 1개면 충분하다 — 델타 사이에 경계가 두 번 잡혀도 화면상 한 번의 줄바꿈이면 된다.
+	boundaryPending atomic.Bool
+	// audioBoundaryMs 는 오디오 경계 임계(ms). 오디오 경로에서 락 없이 읽으려고 atomic이다.
+	// 설정 로드/변경 시 controller가 갱신한다(0 이하 = 관찰 비활성).
+	audioBoundaryMs atomic.Int64
 	// lastSentSamples/lastCumSave는 runLoop 단독 접근(비용 델타·누적 저장 스로틀).
 	lastSentSamples int64
 	lastCumSave     time.Time
@@ -200,6 +209,7 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	c.mu.Lock()
 	c.apiKey, c.apiKeyErr = key, err
 	c.settings = settings
+	c.cacheAudioBoundary(settings) // 오디오 경로용 lock-free 캐시.
 	// 설정에서 언어/입력/원문을 초기화한다.
 	if settings.Language.Target != "" {
 		c.target = settings.Language.Target
@@ -251,7 +261,25 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 		c.mu.Lock()
 		vadOn := c.settings.VAD.Enabled
 		c.mu.Unlock()
-		src = vad.WrapSource(src, vadOn)
+		// 오디오 도메인 화자 경계 관찰(관찰 전용 — 오디오를 막거나 변형하지 않는다).
+		// 게이팅이 켜져 있으면 게이트 인스턴스 하나로 게이팅+관찰을 겸한다(RMS 이중 계산 없음).
+		// 훅은 오디오 goroutine에서 호출되므로 atomic set + 로그만 한다.
+		boundary := c.audioBoundarySilence()
+		src = vad.WrapSourceObserved(src, vadOn, boundary, vad.Hooks{
+			OnSpeechStart: func(silence time.Duration, st vad.Levels) {
+				txlog.Logf("vad.observe", "onset 발화 시작 — 직전 무음 %dms %s", silence.Milliseconds(), levelsText(st))
+			},
+			OnSpeechEnd: func(st vad.Levels) {
+				txlog.Logf("vad.observe", "offset 발화 종료(여운 300ms 소진) %s", levelsText(st))
+			},
+			OnBoundary: func(silence time.Duration, st vad.Levels) {
+				txlog.Logf("vad.observe", "화자 경계 후보 — 무음 %dms ≥ 임계 %dms %s",
+					silence.Milliseconds(), c.audioBoundarySilence().Milliseconds(), levelsText(st))
+				c.boundaryPending.Store(true) // runLoop가 다음 번역 delta 직전에 소비.
+			},
+		})
+		// 설정 변경(engine.audioBoundarySilenceMs)을 재시작 없이 반영한다(atomic 읽기).
+		vad.SetBoundarySilenceFunc(src, c.audioBoundarySilence)
 		// 입력 비용 계량: 실제 송신되는(게이트 통과 후) 청크의 샘플 수를 누적한다.
 		return c.countingSource(src), nil
 	}
@@ -440,6 +468,7 @@ func (c *Controller) reloadSettings() {
 	c.mu.Lock()
 	prevAutoCheck := c.settings.Update.AutoCheck
 	c.settings = s
+	c.cacheAudioBoundary(s) // 오디오 경로용 lock-free 캐시(설정 변경 즉시 반영).
 	c.target = s.Language.Target
 	c.source = s.Language.Source
 	c.showSource = s.Language.ShowSource
@@ -490,6 +519,20 @@ func (c *Controller) pushSubtitle(msg ipc.SubtitleMsg) {
 // any change (throttled to actual state transitions).
 func (c *Controller) runLoop() {
 	eng := subtitle.New()
+	// 화자 경계 트리거 튜닝값 주입(숨은 설정). 1차 트리거는 오디오 VAD 옵저버(→ 아래
+	// boundaryPending 래치)이고, 델타 갭은 그 백업이다. 물음표 휴리스틱은 질문→답변 전환용.
+	eng.TurnBoundarySilence = c.turnBoundarySilence()
+	eng.QuestionBoundary = c.wantQuestionBoundary()
+	txlog.Logf("engine.config", "audioBoundarySilence=%s turnBoundarySilence=%s silenceTimeout=%s silenceClear=%s questionBoundary=%v speakerAlternate=%v",
+		c.audioBoundarySilence(), eng.TurnBoundarySilence, eng.SilenceTimeout, eng.SilenceClearTimeout,
+		eng.QuestionBoundary, c.wantSpeakerAlternate())
+	// 진단: 엔진의 판단 근거(확정 사유·화자 토글·경계 보류/해소·버퍼 상태)를 트랜잭션
+	// 로그로 흘린다. 엔진은 순수 상태머신이라 파일 I/O를 하지 않고 이 훅으로만 밖에 알린다.
+	// 메시지 앞머리가 곧 태그다("engine.confirm ..." → 태그 engine.confirm).
+	eng.Logf = func(format string, args ...any) {
+		tag, rest := splitLogTag(fmt.Sprintf(format, args...))
+		txlog.Logf(tag, "%s", rest)
+	}
 	// 자막 확정 줄을 녹화기로 흘린다(A Wave3). recorder가 닫혀 있으면 WriteLine은 무시된다.
 	// OnConfirmedLine은 이 goroutine(runLoop)에서 호출되고 recorder는 자체 mutex를 가진다.
 	eng.OnConfirmedLine = func(source, translation string) {
@@ -517,7 +560,7 @@ func (c *Controller) runLoop() {
 			st.EnqueuedBytes, st.DroppedChunks, st.DupSkipped, st.BufferedMS)
 	}
 	maybePush := func() {
-		msg := buildSubtitleMsg(eng, c.wantSource())
+		msg := buildSubtitleMsg(eng, c.wantSource(), c.wantSpeakerAlternate())
 		sig := subtitleSignature(msg)
 		if sig == lastSig {
 			return
@@ -529,6 +572,12 @@ func (c *Controller) runLoop() {
 			log.Printf("[controller] 오버레이 push: visible=%v lines=%d %q",
 				msg.Visible, len(msg.Lines), truncRunes(strings.Join(msg.Lines, " / "), 60))
 		}
+		// 진단: 실제로 push되는 스냅샷만 기록한다(서명이 바뀐 경우 = 표시가 달라진 경우).
+		// Join/truncate 비용을 피하려고 로깅이 살아 있을 때만 조립한다.
+		if txlog.Enabled() {
+			txlog.Logf("subtitle.push", "visible=%v lines=%d speakers=%v text=%q",
+				msg.Visible, len(msg.Lines), msg.Speakers, truncRunes(strings.Join(msg.Lines, " | "), 200))
+		}
 		c.pushSubtitle(msg)
 	}
 
@@ -537,6 +586,10 @@ func (c *Controller) runLoop() {
 		case <-c.ctx.Done():
 			return
 		case now := <-ticker.C:
+			// 설정 변경(숨은 설정 engine.turnBoundarySilenceMs)을 재시작 없이 반영한다.
+			// eng는 이 goroutine 단독 소유라 경합이 없다.
+			eng.TurnBoundarySilence = c.turnBoundarySilence()
+			eng.QuestionBoundary = c.wantQuestionBoundary()
 			eng.Heartbeat(now)
 			maybePush()
 			c.accountInputCost(now)
@@ -647,6 +700,7 @@ func styleMsgFromSettings(s config.Settings) ipc.StyleMsg {
 		FontSize:      s.Subtitle.FontSize,
 		FontWeight:    s.Subtitle.FontWeight,
 		TextColor:     s.Subtitle.TextColor,
+		AltTextColor:  s.Subtitle.AltTextColor,
 		StrokeEnabled: s.Subtitle.StrokeEnabled,
 		StrokeColor:   s.Subtitle.StrokeColor,
 		StrokeWidth:   s.Subtitle.StrokeWidth,
@@ -667,8 +721,18 @@ func styleMsgFromSettings(s config.Settings) ipc.StyleMsg {
 // applyEvent reflects a pipeline event into the subtitle engine (단일 goroutine).
 // Surfaces lifecycle/state to the HUD status text and forwards nothing to stdout.
 func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
+	// 진단: 엔진에 반영되기 직전의 파이프라인 이벤트를 종류+텍스트로 남긴다. gemini.rx(수신)와
+	// engine.*(판단) 사이의 연결고리라, 이벤트 채널에서 유실/지연이 있으면 여기서 드러난다.
+	logPipelineEvent(ev)
+
 	switch ev.Kind {
 	case pipeline.TranslatedDelta:
+		// 오디오 도메인에서 잡은 화자 경계를 **이 델타를 넣기 직전에** 적용한다. 번역 지연
+		// 때문에 경계 직후 첫 델타가 도착할 즈음엔 이전 발화 번역이 대개 끝나 있어, 새 발화
+		// 텍스트가 새 줄·새 색으로 시작한다. 래치는 소비 즉시 clear(Swap)한다.
+		if c.boundaryPending.Swap(false) {
+			eng.TurnBoundaryHint()
+		}
 		eng.IngestTranslatedDelta(ev.Text)
 	case pipeline.SourceDelta:
 		eng.IngestSourceDelta(ev.Text)
@@ -804,6 +868,43 @@ func (c *Controller) wantSource() bool {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.showSource
+}
+
+// wantSpeakerAlternate reports whether 화자 전환 근사 2색 교대를 적용할지(숨은 스위치).
+// 설정 UI에는 없고 settings.json의 subtitle.speakerColorAlternate 로만 끌 수 있다.
+func (c *Controller) wantSpeakerAlternate() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.settings.Subtitle.SpeakerColorAlternate
+}
+
+// turnBoundarySilence returns 델타 갭 기반 턴 경계 임계(숨은 설정 engine.turnBoundarySilenceMs).
+// 0 이하면 엔진이 이 트리거를 끄고 기존 2초 무음 확정으로 폴백한다.
+func (c *Controller) turnBoundarySilence() time.Duration {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return time.Duration(c.settings.Engine.TurnBoundarySilenceMs) * time.Millisecond
+}
+
+// audioBoundarySilence returns 오디오 도메인 화자 경계 임계(숨은 설정
+// engine.audioBoundarySilenceMs). **오디오 dispatch goroutine에서 청크마다 호출되므로
+// 락을 쓰지 않는다** — 값은 atomic에 캐시되고 설정 로드/변경 시 갱신된다.
+func (c *Controller) audioBoundarySilence() time.Duration {
+	return time.Duration(c.audioBoundaryMs.Load()) * time.Millisecond
+}
+
+// wantQuestionBoundary reports 물음표 휴리스틱(질문→답변 전환) 사용 여부
+// (숨은 설정 engine.questionBoundary).
+func (c *Controller) wantQuestionBoundary() bool {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.settings.Engine.QuestionBoundary
+}
+
+// cacheAudioBoundary mirrors 설정의 오디오 경계 임계를 lock-free 캐시에 반영한다.
+// 설정을 c.settings에 넣는 모든 경로(초기화/reload/save)에서 호출한다.
+func (c *Controller) cacheAudioBoundary(s config.Settings) {
+	c.audioBoundaryMs.Store(int64(s.Engine.AudioBoundarySilenceMs))
 }
 
 // shutdown kills the overlay child and tears down the reconciler. Idempotent.
@@ -1092,6 +1193,7 @@ func (c *Controller) SaveSettings(s config.Settings) error {
 	c.mu.Lock()
 	prevAutoCheck := c.settings.Update.AutoCheck
 	c.settings = s
+	c.cacheAudioBoundary(s) // 오디오 경로용 lock-free 캐시(설정 변경 즉시 반영).
 	c.target = s.Language.Target
 	c.source = s.Language.Source
 	c.showSource = s.Language.ShowSource
@@ -1216,6 +1318,10 @@ func normalizeSettings(s config.Settings) config.Settings {
 		s.Subtitle.MaxLines = 1
 	} else if s.Subtitle.MaxLines > 4 {
 		s.Subtitle.MaxLines = 4
+	}
+	// 화자 교대 보조 색이 비어 있으면(구버전 settings.json) 기본값으로 채운다.
+	if strings.TrimSpace(s.Subtitle.AltTextColor) == "" {
+		s.Subtitle.AltTextColor = def.Subtitle.AltTextColor
 	}
 	if s.Subtitle.GlowRadius < 0 {
 		s.Subtitle.GlowRadius = 0
@@ -1569,23 +1675,78 @@ func geminiStatusText(status string, keyLoaded bool) string {
 // -----------------------------------------------------------------------------
 
 // buildSubtitleMsg renders the engine's current display state into an IPC message.
-// Lines = 확정 roll-up 줄 + 진행 중 줄(엔진의 canonical DisplayTranslation 분해).
-func buildSubtitleMsg(eng *subtitle.Engine, showSource bool) ipc.SubtitleMsg {
+// Lines = 확정 roll-up 줄 + 진행 중 줄, Speakers = 줄별 화자 패리티(0/1, 턴 경계 근사).
+// alternate=false면 엔진이 패리티를 전부 0으로 내려 기존 단색 표시와 동일해진다.
+// eng는 runLoop 단독 소유라 여기서 스위치를 반영해도 경합이 없다.
+func buildSubtitleMsg(eng *subtitle.Engine, showSource, alternate bool) ipc.SubtitleMsg {
+	eng.SpeakerAlternate = alternate
+	dl := eng.DisplayLines()
 	var lines []string
-	for _, ln := range strings.Split(eng.DisplayTranslation(), "\n") {
-		if strings.TrimSpace(ln) != "" {
-			lines = append(lines, ln)
-		}
+	var speakers []int
+	for _, l := range dl {
+		lines = append(lines, l.Text)
+		speakers = append(speakers, l.Speaker)
 	}
 	src := ""
 	if showSource {
 		src = eng.DisplaySource()
 	}
 	return ipc.SubtitleMsg{
-		Lines:   lines,
-		Source:  src,
-		Visible: eng.Visible(),
+		Lines:    lines,
+		Speakers: speakers,
+		Source:   src,
+		Visible:  eng.Visible(),
 	}
+}
+
+// -----------------------------------------------------------------------------
+// 트랜잭션 로그 헬퍼 (~/.liveTranslate/transactions.log — internal/txlog)
+// -----------------------------------------------------------------------------
+
+// logPipelineEvent records one pipeline event as it is applied to the engine.
+// 오디오 이벤트는 바이트 수만 남긴다(고빈도·대용량이라 내용은 무의미).
+func logPipelineEvent(ev pipeline.Event) {
+	if !txlog.Enabled() {
+		return
+	}
+	switch ev.Kind {
+	case pipeline.OutputAudio:
+		txlog.Logf("pipe.event", "OutputAudio pcmBytes=%d", len(ev.AudioPCM))
+	case pipeline.State:
+		txlog.Logf("pipe.event", "State state=%s err=%v", ev.State.String(), ev.Err)
+	case pipeline.PermanentFailure:
+		txlog.Logf("pipe.event", "PermanentFailure err=%v", ev.Err)
+	case pipeline.Usage:
+		if ev.Usage != nil {
+			txlog.Logf("pipe.event", "Usage outputAudioTokens=%d totalTokens=%d",
+				ev.Usage.OutputAudioTokens, ev.Usage.TotalTokens)
+		}
+	default:
+		txlog.Logf("pipe.event", "%s text=%q", ev.Kind.String(), ev.Text)
+	}
+}
+
+// levelsText 는 VAD 옵저버의 적응 판정 상태를 로그 한 조각으로 만든다. 매 프레임이 아니라
+// 전이/경계 시점에만 붙여 로그 폭주를 막는다(적응 임계 자체는 프레임마다 변한다).
+func levelsText(st vad.Levels) string {
+	mode := "고정(워밍업)"
+	if st.Adaptive {
+		mode = "적응"
+	}
+	return fmt.Sprintf("[rms=%.4f floor=%.4f on=%.4f off=%.4f %s]",
+		st.RMS, st.Floor, st.OnLevel, st.OffLevel, mode)
+}
+
+// splitLogTag splits an engine diagnostic message into (tag, rest). 엔진은 txlog를
+// import 하지 않으므로(순수 상태머신) 메시지 앞머리에 태그를 실어 보낸다:
+// "engine.confirm reason=..." → ("engine.confirm", "reason=..."). 앞머리가 없으면
+// 통째로 "engine" 태그로 넘긴다.
+func splitLogTag(msg string) (tag, rest string) {
+	i := strings.IndexByte(msg, ' ')
+	if i <= 0 || !strings.HasPrefix(msg, "engine.") {
+		return "engine", msg
+	}
+	return msg[:i], msg[i+1:]
 }
 
 // subtitleSignature is a cheap change-detection key for throttling IPC pushes.
@@ -1599,7 +1760,14 @@ func subtitleSignature(m ipc.SubtitleMsg) string {
 	b.WriteByte('|')
 	b.WriteString(m.Source)
 	b.WriteByte('|')
-	for _, l := range m.Lines {
+	for i, l := range m.Lines {
+		// 화자 패리티도 서명에 포함한다 — 텍스트가 그대로여도 색이 바뀌면 push 해야 한다.
+		sp := 0
+		if i < len(m.Speakers) {
+			sp = m.Speakers[i]
+		}
+		b.WriteByte(byte('0' + sp&1))
+		b.WriteByte(':')
 		b.WriteString(l)
 		b.WriteByte('\n')
 	}

@@ -40,8 +40,10 @@ static const wchar_t *kClassName = L"LiveTranslateNativeOverlay";
 
 struct State {
     // content
-    std::wstring lines;   // translated lines joined by '\n'
-    std::wstring source;  // in-progress source line
+    std::wstring lines;    // translated lines joined by '\n'
+    // 줄별 화자 패리티('0'/'1'), lines를 '\n'으로 쪼갠 결과와 같은 인덱스. 비어 있으면 전부 0.
+    std::wstring speakers;
+    std::wstring source;   // in-progress source line
     bool visible;
 
     // style (mirrors ipc.StyleMsg)
@@ -49,6 +51,7 @@ struct State {
     double fontSize;      // px
     std::wstring fontWeight;
     std::wstring textColor;
+    std::wstring altTextColor; // 화자 패리티 1 줄의 보조 색.
     bool strokeEnabled;
     std::wstring strokeColor;
     double strokeWidth;
@@ -210,9 +213,11 @@ static void roundRect(GraphicsPath &path, REAL x, REAL y, REAL w, REAL h, REAL r
 }
 
 // drawTextLine paints one caption line at (x, y) with glow → stroke → fill.
+// speaker: 화자 근사 패리티(0/1) — 1이면 보조 색(altTextColor)으로 채운다. 원문 줄은
+// 교대 대상이 아니므로 호출자가 항상 0을 넘긴다.
 static void drawTextLine(Graphics &g, const std::wstring &text, REAL x, REAL y,
                          REAL size, FontFamily *ff, INT fontStyle,
-                         const State &st, bool isSource) {
+                         const State &st, bool isSource, int speaker) {
     StringFormat fmt(StringFormat::GenericTypographic());
     GraphicsPath path;
     path.AddString(text.c_str(), -1, ff, fontStyle, size, PointF(x, y), &fmt);
@@ -237,7 +242,12 @@ static void drawTextLine(Graphics &g, const std::wstring &text, REAL x, REAL y,
     }
 
     // Fill (glyph body). Source line is dimmed to 0.85 alpha (원본 .line.source).
-    DWORD c = parseColorARGB(st.textColor, 0xFFFFFFFF);
+    DWORD c;
+    if (!isSource && speaker == 1 && !st.altTextColor.empty()) {
+        c = parseColorARGB(st.altTextColor, 0xFFFFD866);
+    } else {
+        c = parseColorARGB(st.textColor, 0xFFFFFFFF);
+    }
     if (isSource) {
         BYTE a = (BYTE)(((c >> 24) & 0xFF) * 0.85);
         c = (c & 0x00FFFFFF) | ((DWORD)a << 24);
@@ -252,7 +262,7 @@ static void drawTextLine(Graphics &g, const std::wstring &text, REAL x, REAL y,
 static void drawContent(Graphics &g, const State &st, int w, int h) {
     // Build the display item list: last maxLines translated lines, then the
     // source line (0.65× size) below, matching the web renderer.
-    struct Item { std::wstring text; REAL size; bool isSource; };
+    struct Item { std::wstring text; REAL size; bool isSource; int speaker; };
     std::vector<Item> items;
 
     std::vector<std::wstring> tls = splitLines(st.lines);
@@ -264,6 +274,8 @@ static void drawContent(Graphics &g, const State &st, int w, int h) {
         it.text = tls[i];
         it.size = (REAL)st.fontSize;
         it.isSource = false;
+        // 패리티 문자열은 tls와 인덱스가 1:1이다(짧거나 없으면 0=기본 색).
+        it.speaker = ((size_t)i < st.speakers.size() && st.speakers[i] == L'1') ? 1 : 0;
         items.push_back(it);
     }
     if (!st.source.empty()) {
@@ -271,6 +283,7 @@ static void drawContent(Graphics &g, const State &st, int w, int h) {
         it.text = st.source;
         it.size = (REAL)(st.fontSize * 0.65);
         it.isSource = true;
+        it.speaker = 0; // 원문 줄은 2색 교대 대상이 아니다.
         items.push_back(it);
     }
     if (items.empty()) return;
@@ -344,7 +357,7 @@ static void drawContent(Graphics &g, const State &st, int w, int h) {
             x = boxX + (boxW - widths[i]) / 2;
         }
         drawTextLine(g, items[i].text, x, y, items[i].size, ff, fontStyle,
-                     st, items[i].isSource);
+                     st, items[i].isSource, items[i].speaker);
         y += heights[i];
     }
 
@@ -471,6 +484,7 @@ extern "C" int lt_native_init(void) {
     g_state.fontSize = 34;
     g_state.fontWeight = L"bold";
     g_state.textColor = L"#FFFFFFFF";
+    g_state.altTextColor = L"#FFD866FF";
     g_state.strokeEnabled = true;
     g_state.strokeColor = L"#000000E6";
     g_state.strokeWidth = 2;
@@ -529,10 +543,11 @@ extern "C" int lt_native_init(void) {
     return 0;
 }
 
-extern "C" void lt_native_update_subtitle(const char *lines, const char *source,
-                                          int visible) {
+extern "C" void lt_native_update_subtitle(const char *lines, const char *speakers,
+                                          const char *source, int visible) {
     EnterCriticalSection(&g_cs);
     g_state.lines = utf8to16(lines);
+    g_state.speakers = utf8to16(speakers); // '0'/'1' per line, "" = 전부 기본 색.
     g_state.source = utf8to16(source);
     g_state.visible = (visible != 0);
     LeaveCriticalSection(&g_cs);
@@ -541,7 +556,7 @@ extern "C" void lt_native_update_subtitle(const char *lines, const char *source,
 
 extern "C" void lt_native_update_style(
     const char *fontFamily, double fontSize, const char *fontWeight,
-    const char *textColor,
+    const char *textColor, const char *altTextColor,
     int strokeEnabled, const char *strokeColor, double strokeWidth,
     int glowEnabled, const char *glowColor, double glowRadius,
     int bgEnabled, const char *bgColor, double bgOpacity,
@@ -552,6 +567,7 @@ extern "C" void lt_native_update_style(
     g_state.fontSize = fontSize;
     g_state.fontWeight = utf8to16(fontWeight);
     g_state.textColor = utf8to16(textColor);
+    g_state.altTextColor = utf8to16(altTextColor);
     g_state.strokeEnabled = (strokeEnabled != 0);
     g_state.strokeColor = utf8to16(strokeColor);
     g_state.strokeWidth = strokeWidth;

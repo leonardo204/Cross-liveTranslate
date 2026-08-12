@@ -27,16 +27,19 @@ extern "C" {
 int lt_native_init(void);
 
 // lt_native_update_subtitle replaces the current caption content.
-//   lines   — UTF-8, translated caption lines joined by '\n' (roll-up order).
-//   source  — UTF-8, the in-progress source line ("" when hidden).
-//   visible — non-zero to show the caption, 0 to clear to fully transparent.
-void lt_native_update_subtitle(const char *lines, const char *source, int visible);
+//   lines    — UTF-8, translated caption lines joined by '\n' (roll-up order).
+//   speakers — ASCII '0'/'1' per line, same order/length as the '\n'-split lines
+//              (화자 전환 근사 패리티: '1'이면 보조 색). ""(빈 문자열)이면 전부 '0'.
+//   source   — UTF-8, the in-progress source line ("" when hidden).
+//   visible  — non-zero to show the caption, 0 to clear to fully transparent.
+void lt_native_update_subtitle(const char *lines, const char *speakers,
+                               const char *source, int visible);
 
 // lt_native_update_style replaces the full rendering style + placement. Mirrors
 // ipc.StyleMsg. Colors are "#RRGGBBAA" (6/8 hex tolerated). fontSize is in px.
 void lt_native_update_style(
     const char *fontFamily, double fontSize, const char *fontWeight,
-    const char *textColor,
+    const char *textColor, const char *altTextColor,
     int strokeEnabled, const char *strokeColor, double strokeWidth,
     int glowEnabled, const char *glowColor, double glowRadius,
     int bgEnabled, const char *bgColor, double bgOpacity,

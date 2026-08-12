@@ -428,6 +428,14 @@
             <div class="row"><span class="lbl">글자색</span><span class="spacer"></span>
               <input type="color" id="colText" /><input type="range" id="alphaText" min="0" max="255" step="1" style="width:90px;flex:0 0 auto" />
             </div>
+            <div class="row"><span class="lbl">화자 전환 색상 구분</span>
+              <label class="sw"><input type="checkbox" id="tgSpeakerAlt" /><span class="track"></span></label></div>
+            <div class="row col">
+              <span class="cap">발화가 끊긴 지점을 화자 전환으로 간주해 두 색을 번갈아 표시합니다.</span>
+            </div>
+            <div class="row" id="rowAltTextColor"><span class="lbl">보조 자막 색상</span><span class="spacer"></span>
+              <input type="color" id="colAltText" /><input type="range" id="alphaAltText" min="0" max="255" step="1" style="width:90px;flex:0 0 auto" />
+            </div>
             <div class="row"><span class="lbl">외곽선</span>
               <label class="sw"><input type="checkbox" id="tgStroke" /><span class="track"></span></label></div>
             <div class="row" id="rowStrokeColor"><span class="lbl">외곽선 색</span><span class="spacer"></span>
@@ -626,11 +634,15 @@
         "SF Pro","Menlo","Georgia","Times New Roman","Verdana"];
       const WEIGHT_CSS = { regular:400, medium:500, semibold:600, bold:700, heavy:800, black:900 };
       // settings.go DefaultSettings().Subtitle — 스타일 리셋 기본값.
+      // **config.SubtitleSettings의 모든 키를 빠짐없이 담아야 한다.** 빠진 키는 리셋 시
+      // Go 쪽에서 zero value로 언마샬돼 영구 저장된다(UI 미노출 키도 마찬가지).
       const STYLE_DEFAULT = {
         fontFamily:"", fontSize:34, fontWeight:"bold", textColor:"#FFFFFFFF",
+        altTextColor:"#FFD866FF",       // UI 미노출 — 화자 교대 보조 색.
         strokeEnabled:true, strokeColor:"#000000E6", strokeWidth:2,
         glowEnabled:false, glowColor:"#00E5FFCC", glowRadius:8,
         bgEnabled:true, bgColor:"#000000FF", bgOpacity:0.35, align:"center", maxLines:2,
+        speakerColorAlternate:true,     // UI 미노출 — 화자 전환 근사 2색 교대 스위치.
       };
 
       let S = null;          // 현재 config.Settings (파일 단일 소스)
@@ -799,6 +811,14 @@
         setSeg("segAlign", sub.align || "center");
         $("lblMaxLines").textContent = "최대 줄수: " + sub.maxLines;
         { const t = splitHexA(sub.textColor); $("colText").value = t.rgb; $("alphaText").value = t.a; }
+        // 화자 전환 색상 구분(기본 on). 구버전 settings.json 등으로 값이 없으면 기본값을
+        // S에 채워 넣는다 — undefined 그대로 저장되면 Go에서 zero value(false/"")가 된다.
+        if (sub.speakerColorAlternate === undefined || sub.speakerColorAlternate === null) {
+          sub.speakerColorAlternate = STYLE_DEFAULT.speakerColorAlternate;
+        }
+        if (!sub.altTextColor) sub.altTextColor = STYLE_DEFAULT.altTextColor;
+        $("tgSpeakerAlt").checked = !!sub.speakerColorAlternate;
+        { const t = splitHexA(sub.altTextColor); $("colAltText").value = t.rgb; $("alphaAltText").value = t.a; }
         $("tgStroke").checked = !!sub.strokeEnabled;
         { const t = splitHexA(sub.strokeColor); $("colStroke").value = t.rgb; $("alphaStroke").value = t.a; }
         $("tgGlow").checked = !!sub.glowEnabled;
@@ -810,6 +830,8 @@
         applyPreview();
       }
       function updateStyleConditionalRows() {
+        // 보조 색상은 화자 전환 색상 구분이 켜졌을 때만 의미가 있다(stroke/glow/bg와 동일 패턴).
+        $("rowAltTextColor").classList.toggle("hidden", !$("tgSpeakerAlt").checked);
         $("rowStrokeColor").classList.toggle("hidden", !$("tgStroke").checked);
         $("rowGlowColor").classList.toggle("hidden", !$("tgGlow").checked);
         $("rowGlowRadius").classList.toggle("hidden", !$("tgGlow").checked);
@@ -1010,14 +1032,22 @@
           $(colId).addEventListener("input", apply); $(alphaId).addEventListener("input", apply);
         };
         bindColor("colText","alphaText","textColor");
+        bindColor("colAltText","alphaAltText","altTextColor");
         bindColor("colStroke","alphaStroke","strokeColor");
         bindColor("colGlow","alphaGlow","glowColor");
+        $("tgSpeakerAlt").addEventListener("change", () => { sub().speakerColorAlternate = $("tgSpeakerAlt").checked; updateStyleConditionalRows(); applyPreview(); commit(); });
         $("tgStroke").addEventListener("change", () => { sub().strokeEnabled = $("tgStroke").checked; updateStyleConditionalRows(); applyPreview(); commit(); });
         $("tgGlow").addEventListener("change", () => { sub().glowEnabled = $("tgGlow").checked; updateStyleConditionalRows(); applyPreview(); commit(); });
         $("rngGlow").addEventListener("input", () => { sub().glowRadius = parseFloat($("rngGlow").value); $("lblGlow").textContent = Math.round(sub().glowRadius); applyPreview(); commit(); });
         $("tgBg").addEventListener("change", () => { sub().bgEnabled = $("tgBg").checked; updateStyleConditionalRows(); applyPreview(); commit(); });
         $("rngBg").addEventListener("input", () => { sub().bgOpacity = parseFloat($("rngBg").value); $("lblBg").textContent = Math.round(sub().bgOpacity*100)+"%"; applyPreview(); commit(); });
-        $("btnResetStyle").addEventListener("click", () => { S.subtitle = JSON.parse(JSON.stringify(STYLE_DEFAULT)); loadStyleControls(); commit(); });
+        // 스타일 리셋: 기존 subtitle 객체 위에 기본값을 덮어쓴다(통째 교체 금지).
+        // STYLE_DEFAULT에 아직 없는 키(향후 추가되는 UI 미노출 필드)가 zero value로
+        // 언마샬돼 영구 저장되는 사고를 막는다.
+        $("btnResetStyle").addEventListener("click", () => {
+          S.subtitle = Object.assign({}, S.subtitle || {}, JSON.parse(JSON.stringify(STYLE_DEFAULT)));
+          loadStyleControls(); commit();
+        });
 
         // 오디오
         $("tgPlayback").addEventListener("change", async () => {

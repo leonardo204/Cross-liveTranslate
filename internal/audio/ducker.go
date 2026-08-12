@@ -29,6 +29,6 @@ type Ducker interface {
 // noopDucker is the fallback used on platforms/builds without a volume backend.
 type noopDucker struct{}
 
-func (noopDucker) Duck(float64)     {}
-func (noopDucker) Restore()         {}
+func (noopDucker) Duck(float64)      {}
+func (noopDucker) Restore()          {}
 func (noopDucker) IsSupported() bool { return false }

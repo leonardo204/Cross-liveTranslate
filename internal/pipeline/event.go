@@ -104,12 +104,12 @@ type UsageInfo struct {
 // 원본 PipelineEvent 등가. 필드는 Kind에 따라 선택적으로 채워진다.
 type Event struct {
 	Kind     Kind
-	Text     string          // SourceDelta / TranslatedDelta
-	Final    bool            // 세그먼트 확정 여부(delta 경로에서는 미사용)
-	AudioPCM []byte          // OutputAudio (24kHz Int16 LE PCM)
-	Usage    *UsageInfo      // Usage
-	State    LifecycleState  // State
-	Err      error           // State(error) / PermanentFailure
+	Text     string         // SourceDelta / TranslatedDelta
+	Final    bool           // 세그먼트 확정 여부(delta 경로에서는 미사용)
+	AudioPCM []byte         // OutputAudio (24kHz Int16 LE PCM)
+	Usage    *UsageInfo     // Usage
+	State    LifecycleState // State
+	Err      error          // State(error) / PermanentFailure
 }
 
 // Provider receives audio and emits a stream of Events.

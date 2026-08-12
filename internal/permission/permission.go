@@ -2,13 +2,14 @@
 // helpers, ported from 원본 liveTranslate/Sources/App/PermissionHelper.swift.
 //
 // 배경(왜 이 패키지가 필요한가):
-//   원본 macOS 앱은 AVAudioEngine으로 마이크를 캡처하며, 첫 캡처 시 AVFoundation이
-//   TCC 마이크 권한 다이얼로그를 자동으로 띄운다. 반면 이 크로스플랫폼 이식은 malgo
-//   (miniaudio)로 캡처하는데, miniaudio는 macOS TCC 마이크 권한을 명시적으로 요청하지
-//   않는다. 그 결과 권한 없이 캡처가 시작되고 → 무음만 흘러 → Gemini가 오디오를 받지
-//   못해 "연결 중…"에서 영원히 멈춘다(번역 안 됨). 이를 근본 해결하려면 우리가 직접
-//   AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio 를 호출해 다이얼로그를
-//   띄워야 한다. 이 패키지가 그 명시적 요청과 상태 조회/딥링크를 제공한다.
+//
+//	원본 macOS 앱은 AVAudioEngine으로 마이크를 캡처하며, 첫 캡처 시 AVFoundation이
+//	TCC 마이크 권한 다이얼로그를 자동으로 띄운다. 반면 이 크로스플랫폼 이식은 malgo
+//	(miniaudio)로 캡처하는데, miniaudio는 macOS TCC 마이크 권한을 명시적으로 요청하지
+//	않는다. 그 결과 권한 없이 캡처가 시작되고 → 무음만 흘러 → Gemini가 오디오를 받지
+//	못해 "연결 중…"에서 영원히 멈춘다(번역 안 됨). 이를 근본 해결하려면 우리가 직접
+//	AVCaptureDevice requestAccessForMediaType:AVMediaTypeAudio 를 호출해 다이얼로그를
+//	띄워야 한다. 이 패키지가 그 명시적 요청과 상태 조회/딥링크를 제공한다.
 //
 // 이 파일(permission.go)은 순수 Go(타입/상수만) — cgo 없음, 빌드태그 없음 → windows
 // 크로스빌드에 그대로 들어간다. 실제 조회/요청/딥링크는 플랫폼 파일이 구현한다:

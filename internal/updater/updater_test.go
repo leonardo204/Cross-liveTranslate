@@ -108,12 +108,12 @@ func TestPlatformKey_DarwinFormat(t *testing.T) {
 	// We're running on darwin when this test compiles with build tag.
 	// Verify the known patterns are at least valid strings.
 	validKeys := map[string]bool{
-		"darwin-aarch64": true,
-		"darwin-x86_64":  true,
-		"windows-x86_64": true,
+		"darwin-aarch64":  true,
+		"darwin-x86_64":   true,
+		"windows-x86_64":  true,
 		"windows-aarch64": true,
-		"linux-x86_64":   true,
-		"linux-aarch64":  true,
+		"linux-x86_64":    true,
+		"linux-aarch64":   true,
 	}
 	if key != "" && !validKeys[key] {
 		t.Errorf("PlatformKey() = %q: not in expected set", key)

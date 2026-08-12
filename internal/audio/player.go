@@ -3,8 +3,10 @@
 // player.go — A3(Wave2): 번역 출력 오디오(24kHz mono Int16 LE PCM) 실시간 재생.
 //
 // 원본 이식: liveTranslate/Sources/Audio/TranslatedAudioPlayer.swift
-//   (AVAudioEngine+AVAudioPlayerNode 스트리밍, in-flight 백프레셔, 40청크 dedup 윈도우,
-//    interrupt flush, 소프트 게인 + tanh 소프트 리미터).
+//
+//	(AVAudioEngine+AVAudioPlayerNode 스트리밍, in-flight 백프레셔, 40청크 dedup 윈도우,
+//	 interrupt flush, 소프트 게인 + tanh 소프트 리미터).
+//
 // 여기서는 malgo(miniaudio) **playback** 디바이스 + 링버퍼로 옮긴다:
 //   - Enqueue(int16LE): dedup → 백프레셔 검사 → Int16→Float32(게인+리미터) → 링버퍼 write.
 //   - malgo 재생 콜백(F32 mono)이 링버퍼에서 read 해 출력. 언더런은 무음(0)으로 패딩.

@@ -3,9 +3,10 @@ package audio
 import "context"
 
 // P1 오디오 파이프라인 계약 상수. 값은 원본 liveTranslate AppConfig.swift에서 이식:
-//   SampleRate   = 16000  (AppConfig.audioSampleRate)
-//   ChunkMillis  = 100    (AppConfig.audioChunkMilliseconds)
-//   ChunkSamples = 1600   (AppConfig.audioChunkSampleCount = 16000*100/1000)
+//
+//	SampleRate   = 16000  (AppConfig.audioSampleRate)
+//	ChunkMillis  = 100    (AppConfig.audioChunkMilliseconds)
+//	ChunkSamples = 1600   (AppConfig.audioChunkSampleCount = 16000*100/1000)
 const (
 	// SampleRate is the Gemini Live 송신 샘플레이트(16kHz mono).
 	SampleRate = 16000

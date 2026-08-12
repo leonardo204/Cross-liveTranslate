@@ -29,6 +29,7 @@ import (
 	"cross-livetranslate/internal/hudpos"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/overlay"
+	"cross-livetranslate/internal/txlog"
 	"cross-livetranslate/internal/updater"
 
 	"github.com/wailsapp/wails/v2"
@@ -89,6 +90,12 @@ func main() {
 	// 멈추는 등의 원인(무음/API키/네트워크/권한)을 추적할 수 없다. 역할별 로그 파일에 append 하고,
 	// 터미널 실행 시에도 보이도록 stderr에 티(tee)한다. 실패해도 무해(stderr 로깅만 유지).
 	setupFileLogging(role)
+
+	// 트랜잭션 로그(~/.liveTranslate/transactions.log): 오디오→gemini→pipeline→엔진→오버레이
+	// 인과 사슬을 한 파일에서 시간순으로 따라가기 위한 진단 로그다. role 로그와 목적·경로가
+	// 다르므로 둘 다 남긴다. 실패해도 무해(no-op으로 강등).
+	txlog.Init(role, appVersion)
+	defer txlog.Close()
 
 	switch role {
 	case "overlay":
@@ -165,15 +172,15 @@ func runController() {
 	ctrl.app = app // 설정 창의 '지금 설치'를 controller 경유로 실행하기 위한 참조.
 
 	err := wails.Run(&options.App{
-		Title:            "Cross-liveTranslate",
-		Width:            hudWidth,
-		Height:           hudHeight,
+		Title:       "Cross-liveTranslate",
+		Width:       hudWidth,
+		Height:      hudHeight,
 		Frameless:   true,
 		AlwaysOnTop: true,
 		// 원본 HUDController.isVisible=false — macOS는 시작 시 제어 HUD를 숨기고 트레이로
 		// 띄운다. 그러나 Windows는 트레이가 아직 stub(no-op)이라 숨기면 창을 띄울 수단이 없어
 		// 앱이 보이지 않게 실행된다. 따라서 트레이가 없는 플랫폼에서는 HUD를 처음부터 표시한다.
-		StartHidden:      hudStartHidden,
+		StartHidden: hudStartHidden,
 		// macOS는 트레이로 HUD를 다시 띄울 수 있어 닫기=숨김(HideWindowOnClose:true)이 맞다.
 		// Windows는 트레이가 stub이라 닫으면 되살릴 수단이 없다 → 닫기=종료로 두어야 앱과
 		// 자식 프로세스가 정상 정리된다(닫아도 숨기만 하면 프로세스가 계속 남는 문제 해결).

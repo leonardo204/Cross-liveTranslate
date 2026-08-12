@@ -25,6 +25,7 @@ import (
 
 	"cross-livetranslate/internal/audio"
 	"cross-livetranslate/internal/pipeline"
+	"cross-livetranslate/internal/txlog"
 )
 
 const (
@@ -175,7 +176,6 @@ func (c *Client) runLoop() {
 			hadHandle := c.resumptionHandle != ""
 			c.resumptionHandle = ""
 			c.mu.Unlock()
-			_ = hadHandle
 			if c.connectAttempts > maxConnectAttempts {
 				c.emit(pipeline.Event{
 					Kind: pipeline.PermanentFailure,
@@ -185,6 +185,8 @@ func (c *Client) runLoop() {
 			}
 			delay := c.reconnectDelay
 			c.reconnectDelay = min(c.reconnectDelay*2, maxReconnectDelay)
+			txlog.Logf("gemini.conn", "재연결 대기 attempts=%d delay=%s handleDropped=%v",
+				c.connectAttempts, delay, hadHandle)
 			c.emitState(pipeline.StateError, fmt.Errorf("연결 끊김 — 재연결 중"))
 			select {
 			case <-time.After(delay):
@@ -207,6 +209,8 @@ func (c *Client) connectOnce() connectResult {
 	// 보안: endpointURL()에는 API 키가 쿼리로 들어가므로 URL을 로그하지 않는다(호스트만).
 	log.Printf("[gemini] 연결 시도 model=%q target=%q source=%q resume=%v",
 		c.cfg.Model, c.cfg.TargetLanguage, c.cfg.SourceLanguage, handle != "")
+	txlog.Logf("gemini.conn", "연결 시도 model=%q target=%q source=%q resume=%v attempts=%d",
+		c.cfg.Model, c.cfg.TargetLanguage, c.cfg.SourceLanguage, handle != "", c.connectAttempts)
 	conn, resp, err := dialer.DialContext(c.ctx, c.endpointURL(), nil)
 	if err != nil {
 		if c.ctx.Err() != nil {
@@ -217,6 +221,7 @@ func (c *Client) connectOnce() connectResult {
 			status = resp.StatusCode
 		}
 		log.Printf("[gemini] 연결 실패 httpStatus=%d err=%v", status, err)
+		txlog.Logf("gemini.conn", "연결 실패 httpStatus=%d err=%v", status, err)
 		// 4xx 핸드셰이크 거부 → 키/모델/요청 문제. 재연결 무의미.
 		if resp != nil && resp.StatusCode >= 400 && resp.StatusCode < 500 {
 			c.emit(pipeline.Event{
@@ -231,6 +236,8 @@ func (c *Client) connectOnce() connectResult {
 	defer c.clearConn()
 	defer conn.Close()
 	log.Printf("[gemini] 웹소켓 연결됨 — setup 송신")
+	txlog.Logf("gemini.conn", "웹소켓 연결됨 — setup 송신 inputTranscription=%v outputAudio=%v",
+		c.cfg.RequestInputTranscription, c.cfg.EmitOutputAudio)
 
 	// setup(첫 메시지) 전송.
 	if err := c.writeJSON(BuildSetup(c.cfg.Model, c.cfg.TargetLanguage, c.cfg.SourceLanguage, c.cfg.RequestInputTranscription, handle)); err != nil {
@@ -238,9 +245,11 @@ func (c *Client) connectOnce() connectResult {
 			return resultStopped
 		}
 		log.Printf("[gemini] setup 송신 실패 err=%v", err)
+		txlog.Logf("gemini.conn", "setup 송신 실패 err=%v", err)
 		return resultDisconnected
 	}
 	log.Printf("[gemini] setup 송신 완료 — setupComplete 대기")
+	txlog.Logf("gemini.conn", "setup 송신 완료 — setupComplete 대기")
 
 	// 수신 루프.
 	for {
@@ -250,10 +259,12 @@ func (c *Client) connectOnce() connectResult {
 				return resultStopped
 			}
 			if c.takeReconnectRequested() {
+				txlog.Logf("gemini.conn", "선제 재연결 요청으로 수신 루프 종료 — 재연결")
 				return resultReconnectNow
 			}
 			// close 코드가 정책 위반류면 영구 실패.
 			if ce, ok := err.(*websocket.CloseError); ok {
+				txlog.Logf("gemini.conn", "연결 종료 closeCode=%d text=%q", ce.Code, ce.Text)
 				switch ce.Code {
 				case websocket.ClosePolicyViolation, websocket.CloseUnsupportedData, websocket.CloseInvalidFramePayloadData:
 					c.emit(pipeline.Event{
@@ -262,10 +273,13 @@ func (c *Client) connectOnce() connectResult {
 					})
 					return resultPermanent
 				}
+			} else {
+				txlog.Logf("gemini.conn", "수신 오류로 연결 종료 err=%v — 재연결", err)
 			}
 			return resultDisconnected
 		}
 		if c.handleServerData(data) {
+			txlog.Logf("gemini.conn", "goAway 수신 — 저장된 핸들로 선제 핸드오버 재연결")
 			return resultReconnectNow
 		}
 	}
@@ -287,15 +301,19 @@ func (c *Client) handleServerData(data []byte) (reconnectNow bool) {
 
 	if sc := msg.ServerContent; sc != nil {
 		if sc.OutputTranscription != nil && sc.OutputTranscription.Text != "" {
+			// 진단: 번역 delta 전문(자막 인과 사슬의 출발점).
+			txlog.Logf("gemini.rx", "outputTranscription text=%q", sc.OutputTranscription.Text)
 			c.emit(pipeline.Event{Kind: pipeline.TranslatedDelta, Text: sc.OutputTranscription.Text})
 		}
 		if sc.InputTranscription != nil && sc.InputTranscription.Text != "" {
+			txlog.Logf("gemini.rx", "inputTranscription text=%q", sc.InputTranscription.Text)
 			c.emit(pipeline.Event{Kind: pipeline.SourceDelta, Text: sc.InputTranscription.Text})
 		}
 		// 일부 모델은 번역문을 modelTurn.parts[].text로 보낸다(오디오 대신 텍스트 경로).
 		if sc.ModelTurn != nil {
-			for _, part := range sc.ModelTurn.Parts {
+			for i, part := range sc.ModelTurn.Parts {
 				if part.Text != "" {
+					txlog.Logf("gemini.rx", "modelTurn.parts[%d].text text=%q", i, part.Text)
 					c.emit(pipeline.Event{Kind: pipeline.TranslatedDelta, Text: part.Text})
 				}
 			}
@@ -311,17 +329,23 @@ func (c *Client) handleServerData(data []byte) (reconnectNow bool) {
 				if err != nil || len(decoded) == 0 {
 					continue
 				}
+				// 오디오는 내용 대신 바이트 수만(로그 비대화 방지).
+				txlog.Logf("gemini.rx", "modelTurn 오디오 pcmBytes=%d", len(decoded))
 				c.emit(pipeline.Event{Kind: pipeline.OutputAudio, AudioPCM: decoded})
 			}
 		}
 		if sc.Interrupted {
+			txlog.Logf("gemini.rx", "interrupted 플래그 도착")
 			c.emit(pipeline.Event{Kind: pipeline.Interrupted})
 		}
 		// generationComplete를 turnComplete보다 먼저(같은 메시지에 둘 다 실릴 수 있음).
 		if sc.GenerationComplete {
+			txlog.Logf("gemini.rx", "generationComplete 플래그 도착")
 			c.emit(pipeline.Event{Kind: pipeline.GenerationComplete})
 		}
 		if sc.TurnComplete {
+			// 진단 핵심: turnComplete가 서버에서 실제로 오는지(=마커 미출현의 1차 분기점).
+			txlog.Logf("gemini.rx", "turnComplete 플래그 도착")
 			c.emit(pipeline.Event{Kind: pipeline.TurnComplete})
 		}
 	}
@@ -367,6 +391,7 @@ func (c *Client) onSetupComplete() {
 	c.mu.Unlock()
 
 	log.Printf("[gemini] setupComplete 수신 — READY (오디오 송신 시작)")
+	txlog.Logf("gemini.conn", "setupComplete 수신 — READY(오디오 송신 시작)")
 	c.emitState(pipeline.StateReady, nil)
 }
 

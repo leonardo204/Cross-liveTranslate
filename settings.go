@@ -23,6 +23,7 @@ import (
 	"sync"
 	"time"
 
+	"cross-livetranslate/internal/activation"
 	"cross-livetranslate/internal/audio"
 	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/display"
@@ -273,16 +274,26 @@ func (s *SettingsAPI) ResetAll(includeAPIKey bool) error {
 // applies them to the settings window: show/hide/quit. stdin EOF(controller 종료)면
 // 설정 프로세스도 종료한다. 별도 goroutine에서 구동한다.
 func runSettingsControlLoop(ctx context.Context) {
+	// 창 닫기(X)/Cmd+H로 앱이 숨겨지면 Dock 아이콘을 내린다. Wails의 HideWindowOnClose는
+	// 창 닫기에서 [NSApp hide:]만 부르고 Go 콜백을 주지 않으므로, 원본의
+	// windowWillClose(→ .accessory 복귀)는 이 알림 옵저버로만 재현할 수 있다.
+	activation.WatchHide()
+
 	ipc.Dispatch(os.Stdin, ipc.Handler{
 		OnControl: func(m ipc.ControlMsg) {
 			switch m.Cmd {
 			case "show":
+				// 원본 SettingsWindowController.show(): accessory 앱이라 창을 앞으로
+				// 가져오려면 잠시 regular로 올린다(이때만 Dock 아이콘이 보인다).
+				activation.Set(activation.Regular)
 				wruntime.WindowShow(ctx)
 				wruntime.WindowUnminimise(ctx)
 				wruntime.WindowSetAlwaysOnTop(ctx, true)
 				wruntime.WindowSetAlwaysOnTop(ctx, false)
 			case "hide":
 				wruntime.WindowHide(ctx)
+				// 보이는 창이 없어졌으니 Dock 아이콘도 내린다(상시 노출 방지).
+				activation.Set(activation.Accessory)
 			case "quit":
 				wruntime.Quit(ctx)
 			case "running-on":

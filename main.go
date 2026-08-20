@@ -11,6 +11,19 @@
 //
 // Each process embeds the same tree but serves its own frontend via fs.Sub,
 // since Wails allows a single WebviewWindow per process.
+//
+// # macOS: Dock 아이콘 정책
+//
+// 세 프로세스가 한 번들을 공유하므로 그대로 두면 Dock 아이콘이 3개 뜬다. 원본
+// liveTranslate와 동일하게 accessory(메뉴바) 앱으로 동작시킨다:
+//
+//   - 번들 Info.plist LSUIElement=true (build/darwin/Info.plist) → 세 프로세스 모두 Dock 0개.
+//   - 각 role의 OnStartup에서 activation.Set(Accessory) — .app 밖에서 바이너리를 직접
+//     실행하는 개발 경로(Info.plist 미적용)까지 덮는 안전장치.
+//   - 설정 창을 띄울 때만 regular로 잠시 올리고(창을 앞으로), 숨기면 accessory로 복귀
+//     (settings.go runSettingsControlLoop + internal/activation).
+//
+// Wails v2.12.0의 mac.Options.ActivationPolicy는 주석 처리(미지원)라 옵션으로 못 준다.
 package main
 
 import (
@@ -26,6 +39,7 @@ import (
 	"path/filepath"
 	"runtime"
 
+	"cross-livetranslate/internal/activation"
 	"cross-livetranslate/internal/hudpos"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/overlay"
@@ -197,6 +211,10 @@ func runController() {
 			WebviewIsTransparent: true,
 		},
 		OnStartup: func(ctx context.Context) {
+			// 메뉴바(accessory) 앱 — Dock 아이콘을 띄우지 않는다. 번들 Info.plist의
+			// LSUIElement=true가 1차 보증이고, 이 호출은 .app 밖에서 바이너리를 직접
+			// 실행하는 개발 경로(Info.plist 미적용)까지 덮는 안전장치다. darwin 외에는 no-op.
+			activation.Set(activation.Accessory)
 			app.startup(ctx)
 			ctrl.start(ctx, flags)
 		},
@@ -277,6 +295,9 @@ func runSettings() {
 		},
 		BackgroundColour: &options.RGBA{R: 236, G: 236, B: 238, A: 1},
 		OnStartup: func(ctx context.Context) {
+			// 시작 시점엔 창이 숨겨져 있으므로 accessory(Dock 아이콘 없음)로 둔다.
+			// control("show")를 받을 때만 regular로 올린다(원본 SettingsWindowController).
+			activation.Set(activation.Accessory)
 			app.startup(ctx)
 			api.setCtx(ctx)
 			go runSettingsControlLoop(ctx)
@@ -350,6 +371,8 @@ func runOverlay() {
 			WindowClassName:      overlay.WindowClassName,
 		},
 		OnStartup: func(ctx context.Context) {
+			// 자막 오버레이는 클릭통과 창이라 Dock에 뜰 이유가 없다(accessory).
+			activation.Set(activation.Accessory)
 			app.startup(ctx)
 		},
 		OnDomReady: func(ctx context.Context) {

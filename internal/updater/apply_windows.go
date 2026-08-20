@@ -136,3 +136,14 @@ func swapPortable(newExe string) error {
 	}
 	return fmt.Errorf("apply-update helper 실행 실패: %w", lastErr)
 }
+
+// InstallTargetDiagnostics 는 Windows에서 설치 경로 진단이 불필요함을 알린다.
+// macOS의 App Translocation(읽기전용 랜덤 마운트) 같은 개념이 없고, 설치는 NSIS 인스톨러
+// 또는 포터블 exe 자기교체로 이뤄진다.
+func InstallTargetDiagnostics() string {
+	exe, err := os.Executable()
+	if err != nil {
+		return "windows: 실행 경로 확인 불가"
+	}
+	return "windows: 설치 경로 진단 미해당 (exe=" + exe + ")"
+}

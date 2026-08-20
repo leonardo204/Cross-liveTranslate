@@ -42,6 +42,7 @@ import (
 	"cross-livetranslate/internal/subtitle"
 	"cross-livetranslate/internal/tray"
 	"cross-livetranslate/internal/txlog"
+	"cross-livetranslate/internal/updater"
 	"cross-livetranslate/internal/vad"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -197,6 +198,11 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	//  초기화될 수 있다. 이는 개발 워크플로 한계이며 근본 해결은 안정적 서명(별도 작업).)
 	log.Printf("[controller] 마이크 권한 상태(시작 시)=%v — 미요청이면 다이얼로그 요청", permission.MicrophoneStatus())
 	permission.RequestMicrophone()
+
+	// 진단: 지금 업데이트가 어디에 설치될지(그리고 App Translocation 상태인지)를 시작 시
+	// 남긴다. "자동 업데이트 후 임시 폴더에서 실행" 같은 사고를 로그 하나로 판별하기 위함.
+	// 파일시스템 조회가 섞여 있으므로 시작 경로를 막지 않도록 goroutine으로 돌린다.
+	go txlog.Logf("update.target", "%s", updater.InstallTargetDiagnostics())
 
 	// 설정을 먼저 로드해 적용한다(Wave 1). 실패해도 기본값으로 HUD는 뜬다.
 	settings, serr := config.Load()

@@ -96,6 +96,12 @@ func run(target, source string, showSource bool, duration time.Duration, sel aud
 		return err
 	}
 
+	// 모델 식별자: settings.json에 있으면 그 값, 없으면 상수 폴백(소프트코딩).
+	model := config.GeminiModel
+	if s, lerr := config.Load(); lerr == nil && s.Model.ID != "" {
+		model = s.Model.ID
+	}
+
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt)
 	defer cancel()
 	if duration > 0 {
@@ -134,14 +140,14 @@ func run(target, source string, showSource bool, duration time.Duration, sel aud
 	defer r.Close()
 
 	fmt.Fprintf(os.Stderr, "[headless] model=%s target=%s source=%s input=%s show-source=%v\n",
-		config.GeminiModel, target, source, sel.Mode, showSource)
+		model, target, source, sel.Mode, showSource)
 	fmt.Fprintln(os.Stderr, "[headless] 시작 — 말하면 정리된 자막이 출력됩니다. (Ctrl-C 종료)")
 
 	r.SetDesired(app.Desired{
 		Running:   true,
 		Selection: sel,
 		Provider: app.ProviderConfig{
-			Model:          config.GeminiModel,
+			Model:          model,
 			TargetLanguage: target,
 			SourceLanguage: source,
 			ShowSource:     showSource,

@@ -24,6 +24,7 @@ import (
 	"github.com/gorilla/websocket"
 
 	"cross-livetranslate/internal/audio"
+	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/pipeline"
 	"cross-livetranslate/internal/txlog"
 )
@@ -79,7 +80,7 @@ type Client struct {
 // NewClient constructs an unstarted Client.
 func NewClient(cfg Config) *Client {
 	if cfg.Model == "" {
-		cfg.Model = "models/gemini-3.5-live-translate-preview"
+		cfg.Model = config.GeminiModel
 	}
 	return &Client{cfg: cfg}
 }

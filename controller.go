@@ -216,6 +216,10 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	c.apiKey, c.apiKeyErr = key, err
 	c.settings = settings
 	c.cacheAudioBoundary(settings) // 오디오 경로용 lock-free 캐시.
+	// 설정에서 모델을 초기화한다(소프트코딩 오버라이드; 비면 상수 폴백 유지).
+	if settings.Model.ID != "" {
+		c.model = settings.Model.ID
+	}
 	// 설정에서 언어/입력/원문을 초기화한다.
 	if settings.Language.Target != "" {
 		c.target = settings.Language.Target

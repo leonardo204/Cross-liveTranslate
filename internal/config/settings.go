@@ -29,6 +29,12 @@ const settingsFileName = "settings.json"
 // settings.json. 테스트에서 격리된 임시 디렉토리를 주입하기 위한 훅(프로덕션은 빈 값).
 var configDirOverride string
 
+// ModelSettings holds the Gemini 모델 식별자 선택(소프트코딩 오버라이드).
+// ID가 비면 config.GeminiModel 폴백 기본값을 쓴다(설정 UI 미노출 — settings.json 직접 편집).
+type ModelSettings struct {
+	ID string `json:"id"` // Gemini 모델 식별자(models/...). ""이면 GeminiModel 기본값 사용.
+}
+
 // LanguageSettings holds translation language selection (원본 SettingsStore 언어 그룹).
 type LanguageSettings struct {
 	Target     string `json:"target"`     // 번역 대상 언어(BCP-47), 기본 "ko".
@@ -153,6 +159,7 @@ type UpdateSettings struct {
 // Settings is the full persisted user-settings model.
 // 모든 후속 웨이브 기능이 여기에 필드를 꽂는다.
 type Settings struct {
+	Model     ModelSettings     `json:"model"`
 	Language  LanguageSettings  `json:"language"`
 	Input     InputSettings     `json:"input"`
 	Subtitle  SubtitleSettings  `json:"subtitle"`
@@ -170,6 +177,9 @@ type Settings struct {
 // Date/난수 없음(결정적).
 func DefaultSettings() Settings {
 	return Settings{
+		Model: ModelSettings{
+			ID: GeminiModel, // 폴백 기본값 = 상수. settings.json에서 덮어써 모델 교체.
+		},
 		Language: LanguageSettings{
 			Target:     DefaultTargetLanguage, // "ko" (AppConfig.defaultTargetLanguageCode)
 			Source:     DefaultSourceLanguage, // "auto" (서버 자동 감지 — 기존 파이프라인)

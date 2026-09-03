@@ -19,6 +19,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"os"
 	"sync"
 	"time"
@@ -219,6 +220,28 @@ func (s *SettingsAPI) Models() []ModelInfo {
 			ModelIdentifier: config.GeminiModel,
 		},
 	}
+}
+
+// ChooseRecordingDir opens the native folder picker for the 자막 녹화 저장 폴더
+// (원본 SettingsWindow의 NSOpenPanel 등가). 선택한 절대경로를 반환하고, 취소했거나
+// 열지 못하면 빈 문자열을 반환한다.
+//
+// 프론트가 쓰던 window.prompt는 Wails(WKWebView)가 패널을 구현하지 않아 창이 뜨지 않고
+// 곧바로 null을 돌려준다 — 버튼을 눌러도 아무 일도 일어나지 않던 원인이라 이 바인딩으로 대체한다.
+func (s *SettingsAPI) ChooseRecordingDir(current string) string {
+	if s.ctx == nil {
+		return ""
+	}
+	dir, err := wruntime.OpenDirectoryDialog(s.ctx, wruntime.OpenDialogOptions{
+		Title:                "자막 녹화 저장 폴더 선택",
+		DefaultDirectory:     current,
+		CanCreateDirectories: true,
+	})
+	if err != nil {
+		log.Println("[settings] 폴더 선택 실패:", err)
+		return ""
+	}
+	return dir
 }
 
 // PermissionStatus returns OS permission states (원본 PermissionHelper 실이식).

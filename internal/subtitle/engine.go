@@ -79,6 +79,10 @@ const (
 type Line struct {
 	Text    string
 	Speaker int // 0=기본 색, 1=보조 색.
+	// Source 는 이 줄에 대응하는 원문이다. 원문 동시 표시가 켜졌을 때만 채워지며,
+	// 렌더러가 "번역문 → 원문" 순서로 바로 아래에 덧붙여 그린다. 확정된 줄은 확정
+	// 시점의 원문 스냅샷을 그대로 들고 있어, 줄이 화면에 남아 있는 동안 원문도 함께 남는다.
+	Source string
 }
 
 // Engine 은 결정적 자막 상태 머신이다. 시간은 Heartbeat(now)로만 주입되며 내부에서
@@ -215,29 +219,42 @@ func (e *Engine) RollupLines() []string {
 // SpeakerAlternate=false면 모든 Speaker 가 0이다.
 func (e *Engine) DisplayLines() []Line {
 	var out []Line
-	add := func(text string, speaker int) {
-		for _, ln := range strings.Split(text, "\n") {
+	// add 는 한 덩어리(줄바꿈 포함 가능)를 표시 줄들로 쪼개 담는다. 원문은 그 덩어리의
+	// 마지막 표시 줄에만 붙여 "번역문 → 원문" 순서가 유지되게 한다.
+	add := func(text string, speaker int, source string) {
+		parts := strings.Split(text, "\n")
+		last := -1
+		for i, ln := range parts {
+			if strings.TrimSpace(ln) != "" {
+				last = i
+			}
+		}
+		for i, ln := range parts {
 			if strings.TrimSpace(ln) == "" {
 				continue
 			}
-			out = append(out, Line{Text: ln, Speaker: e.speakerOf(speaker)})
+			src := ""
+			if i == last {
+				src = source
+			}
+			out = append(out, Line{Text: ln, Speaker: e.speakerOf(speaker), Source: src})
 		}
 	}
 	if e.segmentMode {
 		keep := e.MaxLines + 2
 		for _, l := range suffixCopy(e.rollupLines, keep) {
-			add(l.Text, l.Speaker)
+			add(l.Text, l.Speaker, l.Source)
 		}
 		if e.currentTranslation != "" {
-			add(e.currentTranslation, e.curSpeaker)
+			add(e.currentTranslation, e.curSpeaker, e.currentSource)
 		}
 		return out
 	}
 	// 비세그먼트 폴백(미리보기 포함): 누적 중이면 누적분, 아니면 마지막 확정분 한 덩어리.
 	if e.currentTranslation == "" {
-		add(e.confirmedTranslation, e.curSpeaker)
+		add(e.confirmedTranslation, e.curSpeaker, e.confirmedSource)
 	} else {
-		add(e.currentTranslation, e.curSpeaker)
+		add(e.currentTranslation, e.curSpeaker, e.currentSource)
 	}
 	return out
 }
@@ -619,7 +636,9 @@ func (e *Engine) confirmTurn(reason confirmReason) {
 }
 
 func (e *Engine) pushRollup(line, source string) {
-	e.rollupLines = append(e.rollupLines, Line{Text: line, Speaker: e.curSpeaker})
+	// 확정 시점의 원문을 줄에 함께 보관한다. 확정하면서 currentSource 를 비우기 때문에,
+	// 이 스냅샷이 없으면 화면의 원문 줄만 먼저 사라진다(번역문은 roll-up 으로 남는다).
+	e.rollupLines = append(e.rollupLines, Line{Text: line, Speaker: e.curSpeaker, Source: source})
 	if len(e.rollupLines) > e.MaxRollupHistory {
 		e.rollupLines = e.rollupLines[len(e.rollupLines)-e.MaxRollupHistory:]
 	}

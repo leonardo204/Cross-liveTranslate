@@ -508,7 +508,7 @@
         <div class="section">
           <div class="sectitle">자막 녹화</div>
           <div class="group">
-            <div class="row"><span class="lbl">저장 폴더</span><span class="val" id="recDir" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px;direction:rtl"></span></div>
+            <div class="row"><span class="lbl">저장 폴더</span><span class="val" id="recDir" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px"></span></div>
             <div class="row"><button class="btn" id="btnChangeRec">변경…</button></div>
             <div class="row"><span class="cap">제어 HUD의 ‘녹화’ 토글을 켜면 이 폴더에 확정된 자막이 [시각] 원문 → 번역문 형식으로 저장됩니다.</span></div>
           </div>
@@ -943,7 +943,7 @@
         $("lblDuckVol").textContent = Math.round(($("rngDuckVol").value)*100) + "%";
 
         // 제어 HUD / 녹화
-        $("recDir").textContent = (S.recording && S.recording.directory) || "";
+        setRecDir((S.recording && S.recording.directory) || "");
 
         // 비용
         $("tgCostHud").checked = !!(S.cost && S.cost.hudEnabled);
@@ -966,6 +966,13 @@
       }
 
       // =================== 배선 ===================
+      // 저장 폴더 표시 — 경로가 길면 뒤쪽이 잘리므로 전체 경로를 툴팁으로 함께 둔다.
+      function setRecDir(path) {
+        const el = $("recDir");
+        el.textContent = path;
+        el.title = path;
+      }
+
       function wire() {
         // 모델
         $("selModel").addEventListener("change", () => { /* Models() 단일 — 백엔드 selectedModel 필드 없음 */ });
@@ -1069,10 +1076,20 @@
         $("rngDuckVol").addEventListener("input", () => { if (!S.audio) S.audio = {}; S.audio.duckVolume = parseFloat($("rngDuckVol").value); $("lblDuckVol").textContent = Math.round(S.audio.duckVolume*100)+"%"; commit(); });
 
         // 제어 HUD — 표시/자동표시/숨김/위치 리셋: 백엔드 필드 없음(UI 전용).
-        $("btnChangeRec").addEventListener("click", () => {
+        // 폴더 선택은 백엔드 네이티브 창(ChooseRecordingDir)을 쓴다.
+        // window.prompt 는 Wails(WKWebView)에서 창이 뜨지 않고 곧바로 null 이라 무반응이었다.
+        $("btnChangeRec").addEventListener("click", async () => {
+          const a = api();
           const cur = (S.recording && S.recording.directory) || "";
-          const v = prompt("자막 녹화 저장 폴더 경로", cur); // NSOpenPanel 대체(폴더 선택 백엔드 없음).
-          if (v != null) { if (!S.recording) S.recording = {}; S.recording.directory = v; $("recDir").textContent = v; commit(); }
+          let v = "";
+          if (a && a.ChooseRecordingDir) {
+            try { v = await a.ChooseRecordingDir(cur); } catch (_) { v = ""; }
+          }
+          if (!v) return; // 취소했거나 열지 못했다 — 기존 값을 유지한다.
+          if (!S.recording) S.recording = {};
+          S.recording.directory = v;
+          setRecDir(v);
+          commit();
         });
 
         // 비용

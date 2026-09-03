@@ -90,7 +90,7 @@
 
   <script>
     // Overlay renderer. Two Wails events drive it:
-    //   "subtitle:update" { lines: string[], visible: bool, source?: string }
+    //   "subtitle:update" { lines: string[], visible: bool, sources?: string[], source?: string }
     //   "style:update"    { fontFamily, fontSize, fontWeight, textColor,
     //                        strokeEnabled, strokeColor, strokeWidth,
     //                        glowEnabled, glowColor, glowRadius,
@@ -124,7 +124,7 @@
         vertical: "bottom",
         offset: 0.5,
       };
-      let lastSubtitle = { lines: [], speakers: [], visible: false, source: "" };
+      let lastSubtitle = { lines: [], speakers: [], sources: null, visible: false, source: "" };
 
       // Weight name → CSS numeric (원본 SubtitleFontWeight 매핑).
       const WEIGHTS = {
@@ -251,27 +251,42 @@
         const allSpeakers = Array.isArray(p.speakers) ? p.speakers : [];
         const spOffset = Math.max(0, allLines.length - lines.length);
         const visible = p.visible !== false;
-        const source = typeof p.source === "string" ? p.source : "";
+        // 줄별 원문(sources)이 오면 각 번역 줄 바로 아래에 붙여 "번역문 → 원문" 순서로
+        // 그린다. 없으면 구버전 메시지(source 한 줄)로 폴백해 맨 아래에 한 번만 그린다.
+        const allSources = Array.isArray(p.sources) ? p.sources : null;
+        const legacySource = typeof p.source === "string" ? p.source : "";
 
         box.textContent = "";
+        let drewSource = false;
         for (let i = 0; i < lines.length; i++) {
           const el = document.createElement("div");
           el.className = "line";
           el.textContent = lines[i];
           applyLineStyle(el, false, allSpeakers[spOffset + i] === 1 ? 1 : 0);
           box.appendChild(el);
+
+          const src = allSources ? allSources[spOffset + i] : "";
+          if (src) {
+            const sel = document.createElement("div");
+            sel.className = "line source";
+            sel.textContent = src;
+            applyLineStyle(sel, true, 0);
+            box.appendChild(sel);
+            drewSource = true;
+          }
         }
-        if (source) {
+        if (!allSources && legacySource) {
           const el = document.createElement("div");
           el.className = "line source";
-          el.textContent = source;
+          el.textContent = legacySource;
           applyLineStyle(el, true, 0);
           box.appendChild(el);
+          drewSource = true;
         }
 
         box.classList.toggle(
           "hidden",
-          !visible || (lines.length === 0 && !source)
+          !visible || (lines.length === 0 && !drewSource)
         );
 
         // 텍스트/줄수가 바뀌면 박스 높이가 달라지므로 세로 위치를 다시 계산한다
@@ -283,6 +298,7 @@
         lastSubtitle = {
           lines: payload && Array.isArray(payload.lines) ? payload.lines : [],
           speakers: payload && Array.isArray(payload.speakers) ? payload.speakers : [],
+          sources: payload && Array.isArray(payload.sources) ? payload.sources : null,
           visible: !payload || payload.visible !== false,
           source: payload && typeof payload.source === "string" ? payload.source : "",
         };

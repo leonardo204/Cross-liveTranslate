@@ -33,11 +33,15 @@ const (
 //	Speakers — 줄별 화자 패리티(0/1). Lines와 같은 길이. 턴 경계(turnComplete/무음 2초)로
 //	           근사한 화자 전환을 렌더러가 2색 교대로 표시하는 데만 쓴다. 비어 있으면
 //	           전부 0(단색)으로 간주한다 — 구버전 오버레이/메시지 하위호환.
-//	Source   — 진행 중 원문(원문 동시 표시가 켜졌을 때만 비어있지 않음).
+//	Sources  — 줄별 원문(원문 동시 표시가 켜졌을 때만 채워진다). Lines와 같은 길이이며,
+//	           렌더러가 각 번역 줄 바로 아래에 "번역문 → 원문" 순서로 덧붙인다. 해당 줄에
+//	           대응하는 원문이 없으면 그 자리는 빈 문자열이다.
+//	Source   — 진행 중 원문(구버전 오버레이 하위호환 — Sources의 마지막 비어있지 않은 값).
 //	Visible  — 자막을 화면에 보여야 하는지(false면 오버레이 숨김).
 type SubtitleMsg struct {
 	Lines    []string `json:"lines"`
 	Speakers []int    `json:"speakers,omitempty"`
+	Sources  []string `json:"sources,omitempty"`
 	Source   string   `json:"source,omitempty"`
 	Visible  bool     `json:"visible"`
 }

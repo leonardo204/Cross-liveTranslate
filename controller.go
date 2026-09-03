@@ -1693,10 +1693,24 @@ func buildSubtitleMsg(eng *subtitle.Engine, showSource, alternate bool) ipc.Subt
 	dl := eng.DisplayLines()
 	var lines []string
 	var speakers []int
+	var sources []string
+	hasSource := false
 	for _, l := range dl {
 		lines = append(lines, l.Text)
 		speakers = append(speakers, l.Speaker)
+		s := ""
+		if showSource {
+			s = l.Source
+		}
+		if s != "" {
+			hasSource = true
+		}
+		sources = append(sources, s)
 	}
+	if !hasSource {
+		sources = nil // 원문이 하나도 없으면 배열 자체를 보내지 않는다(메시지 간소화).
+	}
+	// 구버전 오버레이 하위호환: 진행 중 원문 1줄을 기존 필드에도 그대로 채운다.
 	src := ""
 	if showSource {
 		src = eng.DisplaySource()
@@ -1704,6 +1718,7 @@ func buildSubtitleMsg(eng *subtitle.Engine, showSource, alternate bool) ipc.Subt
 	return ipc.SubtitleMsg{
 		Lines:    lines,
 		Speakers: speakers,
+		Sources:  sources,
 		Source:   src,
 		Visible:  eng.Visible(),
 	}

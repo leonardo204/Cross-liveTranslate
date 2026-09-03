@@ -45,6 +45,7 @@ import (
 	"runtime"
 	"sync"
 	"syscall"
+	"time"
 	"unsafe"
 
 	"golang.org/x/sys/windows"
@@ -194,6 +195,11 @@ var winTray struct {
 	// 대기 중인 풍선 알림 텍스트. Notify가 채우고 트레이 스레드가 소비한다.
 	balloonTitle string
 	balloonText  string
+
+	// done 은 트레이 스레드가 완전히 끝났을 때 닫힌다(트레이 스레드의 defer). Shutdown이
+	// 아이콘 제거가 실제로 끝날 때까지 기다리는 데 쓴다 — PostMessage만 하고 바로 돌아오면
+	// 호출 직후 프로세스가 죽어 알림 영역에 유령 아이콘이 남는다.
+	done chan struct{}
 }
 
 // taskbarCreatedMsg 는 탐색기(Explorer)가 재시작될 때 브로드캐스트되는 등록 메시지다.
@@ -212,21 +218,32 @@ func runHandler(fn func()) {
 // handlers. 전용 OS 스레드에서 숨김 창 + 메시지 루프를 돌린다. 아이콘 설치가 끝나면
 // 반환하므로, 반환 시점에는 트레이가 이미 보인다. 두 번째 호출은 no-op이다.
 func Init(h Handlers) error {
-	handlers = h
-
 	winTray.mu.Lock()
 	if winTray.started {
 		winTray.mu.Unlock()
 		return nil
 	}
+	// handlers 는 트레이 스레드가 읽는다 — 스레드를 띄우기 전에 락 안에서 채운다.
+	handlers = h
 	winTray.started = true
 	winTray.title = "Cross-liveTranslate"
 	winTray.status = "idle"
+	done := make(chan struct{})
+	winTray.done = done
 	winTray.mu.Unlock()
 
 	ready := make(chan error, 1)
-	go trayThread(ready)
-	return <-ready
+	go trayThread(ready, done)
+	err := <-ready
+	if err != nil {
+		// 설치에 실패했으면 started 를 원복한다. 그대로 두면 다음 Init 호출이 위 가드에 걸려
+		// **성공(nil)** 을 돌려주고, 호출자는 트레이가 있다고 믿고 제어 HUD를 숨긴다.
+		// HUD는 frameless라 창 UI가 없어서 그 순간 앱을 다시 부를 방법이 사라진다.
+		winTray.mu.Lock()
+		winTray.started = false
+		winTray.mu.Unlock()
+	}
+	return err
 }
 
 // Shutdown removes the tray icon and stops the tray thread. Idempotent / safe to
@@ -234,9 +251,22 @@ func Init(h Handlers) error {
 func Shutdown() {
 	winTray.mu.Lock()
 	hwnd := winTray.hwnd
+	done := winTray.done
 	winTray.mu.Unlock()
-	if hwnd != 0 {
-		procPostMessageW.Call(hwnd, wmTrayQuit, 0, 0)
+	if hwnd == 0 {
+		return
+	}
+	procPostMessageW.Call(hwnd, wmTrayQuit, 0, 0)
+	if done == nil {
+		return
+	}
+	// 아이콘을 실제로 지우는 Shell_NotifyIcon(NIM_DELETE)은 트레이 스레드가 처리한다.
+	// 여기서 기다리지 않으면 호출 직후 프로세스가 종료돼 그 호출이 실행되지 못하고,
+	// 알림 영역에 죽은 프로세스의 아이콘이 남는다(마우스를 올려야 사라진다).
+	// 타임아웃은 안전장치다 — 종료 경로가 트레이 스레드 때문에 막히지 않게 한다.
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
 	}
 }
 
@@ -290,9 +320,11 @@ func refreshTray() {
 // trayThread owns the tray window for the whole process lifetime.
 // LockOSThread 필수: Win32 메시지는 **창을 만든 스레드**로만 디스패치되므로, goroutine이
 // 다른 OS 스레드로 옮겨가면 메시지를 영영 못 받는다.
-func trayThread(ready chan<- error) {
+func trayThread(ready chan<- error, done chan<- struct{}) {
 	runtime.LockOSThread()
 	defer runtime.UnlockOSThread()
+	// 어떤 경로로 끝나든(설치 실패·메시지 루프 종료) Shutdown의 대기를 반드시 풀어준다.
+	defer close(done)
 
 	hinst, _, _ := procGetModuleHandleW.Call(0)
 
@@ -484,11 +516,17 @@ func showTrayMenu(hwnd uintptr) {
 
 // appendMenuItem is a thin AppendMenuW wrapper (빈 텍스트는 구분선용).
 func appendMenuItem(hmenu, flags uintptr, id uint32, text string) {
-	var textPtr uintptr
-	if text != "" {
-		textPtr = uintptr(unsafe.Pointer(windows.StringToUTF16Ptr(text)))
+	if text == "" { // 구분선(MF_SEPARATOR) — 문자열이 없다.
+		procAppendMenuW.Call(hmenu, flags, uintptr(id), 0)
+		return
 	}
-	procAppendMenuW.Call(hmenu, flags, uintptr(id), textPtr)
+	ptr, err := windows.UTF16PtrFromString(text)
+	if err != nil {
+		return // NUL이 섞인 라벨은 없다 — 여기 오면 그 항목만 빠진다.
+	}
+	// unsafe.Pointer → uintptr 변환은 **호출식 안에서** 해야 한다. 결과를 변수에 담아 두면
+	// UTF-16 버퍼를 가리키는 유일한 참조가 uintptr뿐이라 호출 전에 GC가 회수할 수 있다.
+	procAppendMenuW.Call(hmenu, flags, uintptr(id), uintptr(unsafe.Pointer(ptr)))
 }
 
 // newNotifyIconData builds a NOTIFYICONDATAW seeded with the current tooltip.
@@ -513,25 +551,22 @@ func newNotifyIconData(hwnd uintptr) notifyIconData {
 	return nid
 }
 
-// copyTip writes a UTF-16 tooltip into the fixed-size buffer, always NUL-terminated.
 // copyUTF16 fills a fixed-size UTF-16 buffer, truncating with a NUL terminator.
+// 잘릴 때 상위 서로게이트만 남지 않도록 짝이 깨지면 한 칸 더 물러난다(깨진 문자 방지).
 func copyUTF16(dst []uint16, s string) {
 	u := windows.StringToUTF16(s)
 	if len(u) > len(dst) {
 		u = u[:len(dst)]
 		u[len(u)-1] = 0
+		if n := len(u) - 1; n > 0 && u[n-1] >= 0xD800 && u[n-1] <= 0xDBFF {
+			u[n-1] = 0 // 상위 서로게이트 홀로 남음 — 함께 잘라낸다.
+		}
 	}
 	copy(dst, u)
 }
 
-func copyTip(dst *[128]uint16, s string) {
-	u := windows.StringToUTF16(s)
-	if len(u) > len(dst) {
-		u = u[:len(dst)]
-		u[len(u)-1] = 0
-	}
-	copy(dst[:], u)
-}
+// copyTip writes a UTF-16 tooltip into the fixed-size NOTIFYICONDATA buffer.
+func copyTip(dst *[128]uint16, s string) { copyUTF16(dst[:], s) }
 
 func addTrayIcon(hwnd uintptr) error {
 	nid := newNotifyIconData(hwnd)

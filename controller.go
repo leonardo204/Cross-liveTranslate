@@ -1070,6 +1070,11 @@ func (c *Controller) HideHUD() {
 	c.hideHUD()
 }
 
+// HUDCloseAvailable reports whether the control HUD may be closed into the tray.
+// 제어 HUD 프론트가 닫기(X) 버튼을 그리기 전에 물어본다 — 트레이 설치가 실패했으면 HideHUD가
+// 거부하므로, 버튼만 보이고 눌러도 아무 일이 없는 상태를 만들지 않기 위해서다.
+func (c *Controller) HUDCloseAvailable() bool { return c.trayReady() }
+
 // -----------------------------------------------------------------------------
 // Wails-bound methods (frontend: window.go.main.App.<Method>)
 // -----------------------------------------------------------------------------

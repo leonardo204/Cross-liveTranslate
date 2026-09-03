@@ -371,8 +371,13 @@
         var closeBtn = $("close");
         if (closeBtn) {
           closeBtn.querySelector(".ico").innerHTML = ICON.xmark;
-          if (/Windows/i.test(navigator.userAgent)) {
-            closeBtn.classList.add("show");
+          // 트레이가 실제로 설치됐을 때만 노출한다. 트레이가 없으면 백엔드 HideHUD가 숨기기를
+          // 거부하므로(숨겨 놓고 되살릴 수단이 없다), 버튼만 보이고 눌러도 아무 일이 없다.
+          var c0 = ctrl();
+          if (/Windows/i.test(navigator.userAgent) && c0 && c0.HUDCloseAvailable) {
+            c0.HUDCloseAvailable().then(function (ok) {
+              if (ok) closeBtn.classList.add("show");
+            }).catch(function () { /* 조회 실패 — 버튼을 숨긴 채 둔다 */ });
           }
           closeBtn.addEventListener("click", function () {
             var c = ctrl(); if (c && c.HideHUD) c.HideHUD();

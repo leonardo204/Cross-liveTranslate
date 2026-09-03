@@ -31,6 +31,12 @@ fi
 NSIS_FLAG=""
 if command -v makensis >/dev/null 2>&1; then
   NSIS_FLAG="-nsis"
+  # makensis는 UTF-8 로케일이 필요하다(LANG이 비면 `Unicode true` 인스톨러 생성이
+  # "Generating language tables"에서 std::bad_alloc으로 죽는다). 값이 있으면 건드리지 않는다.
+  if [[ -z "${LC_ALL:-}" && -z "${LANG:-}" ]]; then
+    export LANG="en_US.UTF-8" LC_ALL="en_US.UTF-8"
+    echo "▸ LANG 미설정 — makensis용 UTF-8 로케일 적용(en_US.UTF-8)"
+  fi
 else
   echo "⚠ makensis 없음 — 인스톨러 스킵(포터블 exe만). 'brew install makensis'로 설치 가능."
 fi

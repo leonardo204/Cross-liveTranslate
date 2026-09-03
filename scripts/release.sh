@@ -174,6 +174,14 @@ if [[ "${SKIP_WINDOWS:-0}" != "1" ]] && command -v "$WIN_CC" >/dev/null 2>&1; th
   fi
   win_nsis=""
   command -v makensis >/dev/null 2>&1 && win_nsis="-nsis" || warn "makensis 없음 — 인스톨러 스킵(포터블만)"
+  # makensis는 UTF-8 로케일이 필요하다. LANG이 비어 있으면 `Unicode true` 인스톨러(project.nsi)의
+  # "Generating language tables" 단계에서 std::bad_alloc으로 죽는다 — 터미널에서는 되는데
+  # 백그라운드/CI 실행만 실패하던 원인이 이것이다(v1.5.3 릴리스에서 관측). 값이 이미 있으면
+  # 그대로 둔다.
+  if [[ -z "${LC_ALL:-}" && -z "${LANG:-}" ]]; then
+    export LANG="en_US.UTF-8" LC_ALL="en_US.UTF-8"
+    log "[win] LANG 미설정 — makensis용 UTF-8 로케일을 적용한다(en_US.UTF-8)"
+  fi
   CGO_ENABLED=1 CC="$WIN_CC" CXX="${WIN_CXX:-x86_64-w64-mingw32-g++}" \
     PATH="$PATH_WITH_GO:/opt/homebrew/bin" wails build \
       -platform windows/amd64 \

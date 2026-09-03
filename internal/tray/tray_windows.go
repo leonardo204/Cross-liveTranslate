@@ -92,6 +92,7 @@ const (
 	wmTrayCallback = 0x0400 + 1 // 트레이 아이콘 → 우리 창
 	wmTrayRefresh  = 0x0400 + 2 // 다른 goroutine → 트레이 스레드: 툴팁 갱신
 	wmTrayQuit     = 0x0400 + 3 // 다른 goroutine → 트레이 스레드: 아이콘 제거 후 종료
+	wmTrayNotify   = 0x0400 + 4 // 다른 goroutine → 트레이 스레드: 풍선 알림 표시
 
 	nimAdd    = 0x00000000
 	nimModify = 0x00000001
@@ -100,6 +101,11 @@ const (
 	nifMessage = 0x00000001
 	nifIcon    = 0x00000002
 	nifTip     = 0x00000004
+	// nifInfo(NIF_INFO) 는 NIM_MODIFY 시 풍선 알림(balloon)을 띄운다. Windows 10/11에서는
+	// 시스템 토스트로 표시되고 몇 초 뒤 셸이 알아서 거둔다(수명은 셸이 정한다).
+	nifInfo = 0x00000010
+	// niifInfo(NIIF_INFO) — 풍선에 정보 아이콘을 붙인다.
+	niifInfo = 0x00000001
 
 	mfString    = 0x00000000
 	mfSeparator = 0x00000800
@@ -184,6 +190,10 @@ var winTray struct {
 	running bool
 	hud     bool
 	started bool
+
+	// 대기 중인 풍선 알림 텍스트. Notify가 채우고 트레이 스레드가 소비한다.
+	balloonTitle string
+	balloonText  string
 }
 
 // taskbarCreatedMsg 는 탐색기(Explorer)가 재시작될 때 브로드캐스트되는 등록 메시지다.
@@ -251,6 +261,20 @@ func SetHUDVisible(visible bool) {
 	winTray.mu.Lock()
 	winTray.hud = visible
 	winTray.mu.Unlock()
+}
+
+// Notify shows a balloon notification (Windows 10/11에서는 시스템 토스트) on the tray
+// icon. 몇 초 뒤 셸이 알아서 거두어간다 — 우리가 지울 필요가 없다. 트레이가 아직
+// 없으면 조용히 버린다(알림은 부차 기능 — 실패해도 흐름을 막지 않는다).
+func Notify(title, text string) {
+	winTray.mu.Lock()
+	winTray.balloonTitle = title
+	winTray.balloonText = text
+	hwnd := winTray.hwnd
+	winTray.mu.Unlock()
+	if hwnd != 0 {
+		procPostMessageW.Call(hwnd, wmTrayNotify, 0, 0)
+	}
 }
 
 // refreshTray asks the tray thread to push the current tooltip to the shell.
@@ -373,6 +397,10 @@ func trayWndProc(hwnd, msg, wparam, lparam uintptr) uintptr {
 		modifyTrayIcon(hwnd)
 		return 0
 
+	case wmTrayNotify:
+		showBalloon(hwnd)
+		return 0
+
 	case wmTrayQuit:
 		deleteTrayIcon(hwnd)
 		procDestroyWindow.Call(hwnd)
@@ -486,6 +514,16 @@ func newNotifyIconData(hwnd uintptr) notifyIconData {
 }
 
 // copyTip writes a UTF-16 tooltip into the fixed-size buffer, always NUL-terminated.
+// copyUTF16 fills a fixed-size UTF-16 buffer, truncating with a NUL terminator.
+func copyUTF16(dst []uint16, s string) {
+	u := windows.StringToUTF16(s)
+	if len(u) > len(dst) {
+		u = u[:len(dst)]
+		u[len(u)-1] = 0
+	}
+	copy(dst, u)
+}
+
 func copyTip(dst *[128]uint16, s string) {
 	u := windows.StringToUTF16(s)
 	if len(u) > len(dst) {
@@ -506,6 +544,27 @@ func addTrayIcon(hwnd uintptr) error {
 
 func modifyTrayIcon(hwnd uintptr) {
 	nid := newNotifyIconData(hwnd)
+	procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
+}
+
+// showBalloon pushes the pending balloon text to the shell (NIM_MODIFY + NIF_INFO).
+// 툴팁/아이콘 플래그는 넣지 않는다 — 풍선만 띄우고 기존 아이콘 상태는 건드리지 않는다.
+func showBalloon(hwnd uintptr) {
+	winTray.mu.Lock()
+	title, text := winTray.balloonTitle, winTray.balloonText
+	winTray.mu.Unlock()
+	if text == "" {
+		return
+	}
+
+	var nid notifyIconData
+	nid.CbSize = uint32(unsafe.Sizeof(nid))
+	nid.HWnd = hwnd
+	nid.UID = trayIconUID
+	nid.UFlags = nifInfo
+	nid.DwInfoFlags = niifInfo
+	copyUTF16(nid.SzInfoTitle[:], title)
+	copyUTF16(nid.SzInfo[:], text)
 	procShellNotifyIconW.Call(nimModify, uintptr(unsafe.Pointer(&nid)))
 }
 

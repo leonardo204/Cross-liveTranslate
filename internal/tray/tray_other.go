@@ -19,3 +19,6 @@ func SetHUDVisible(bool) {}
 
 // Shutdown is a no-op stub.
 func Shutdown() {}
+
+// Notify is a no-op stub (풍선 알림은 Windows 트레이 전용).
+func Notify(title, text string) {}

@@ -75,3 +75,8 @@ func lt_tray_go_settings() { runHandler(handlers.OnSettings) }
 
 //export lt_tray_go_quit
 func lt_tray_go_quit() { runHandler(handlers.OnQuit) }
+
+// Notify is a no-op on macOS. 원본 liveTranslate도 HUD를 숨길 때 별도 알림을 띄우지
+// 않는다(메뉴바 아이콘이 항상 보여 앱이 어디 있는지 자명하다). Windows는 작업표시줄
+// 아이콘이 없어 앱이 사라진 것처럼 보이므로 그쪽에서만 풍선으로 안내한다.
+func Notify(title, text string) {}

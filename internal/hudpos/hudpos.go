@@ -11,3 +11,10 @@ package hudpos
 func PositionPrimaryTopRight(title string) error {
 	return positionPrimaryTopRight(title)
 }
+
+// HideFromTaskbar removes the window's taskbar button / Alt+Tab entry
+// (Windows 전용 — 트레이 상주 앱이므로 작업표시줄에 자리를 차지하지 않는다).
+// 그 외 플랫폼은 no-op. 실패는 무해(로그만).
+func HideFromTaskbar(title string) error {
+	return hideFromTaskbar(title)
+}

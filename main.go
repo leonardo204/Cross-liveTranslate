@@ -41,7 +41,6 @@ import (
 	"sync/atomic"
 
 	"cross-livetranslate/internal/activation"
-	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/hudpos"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/overlay"
@@ -92,21 +91,17 @@ func requestQuit(ctx context.Context) {
 
 // hudStartsHidden decides the initial control-HUD visibility.
 //
-//	트레이 없음  → 항상 표시(숨기면 다시 띄울 수단이 없다)
-//	darwin       → 항상 숨김(원본 HUDController.isVisible=false 그대로)
-//	windows      → 마지막 상태 복원(트레이 "제어 HUD 표시" 토글이 settings.json에 영속된다)
+//	darwin  → 항상 숨김(원본 HUDController.isVisible=false 그대로)
+//	그 외   → 항상 표시(시작 시 제어 HUD가 바로 보인다)
 func hudStartsHidden() bool {
-	if !trayCapable {
-		return false
-	}
+	// darwin — 항상 숨김(원본 HUDController.isVisible=false 그대로. 메뉴바로 띄운다).
 	if runtime.GOOS == "darwin" {
 		return true
 	}
-	s, err := config.Load()
-	if err != nil {
-		return false
-	}
-	return !s.HUD.Visible
+	// windows/기타 — 항상 표시. 마지막 상태를 복원하지 않는 이유: 작업표시줄 아이콘이 없는
+	// 트레이 상주 앱이라, 숨긴 채로 시작하면 실행했는데 화면에 아무것도 안 나타난다(사용자가
+	// 앱이 안 켜졌다고 오인한다). 숨김은 사용자가 직접 닫았을 때만 일어나야 한다.
+	return false
 }
 
 // init forces Go's pure-Go DNS resolver instead of the macOS cgo resolver
@@ -264,6 +259,9 @@ func runController() {
 		OnDomReady: func(ctx context.Context) {
 			// 창이 realize된 뒤 배치해야 Wails의 기본(중앙) 초기 배치에 덮어써지지 않는다.
 			positionHUDTopRight(ctx)
+			// 트레이 상주 앱 — 제어 HUD는 작업표시줄/Alt+Tab에 자리를 차지하지 않는다
+			// (원본 macOS accessory 앱 동작의 Windows 등가물). 그 외 플랫폼은 no-op.
+			hideHUDFromTaskbar()
 		},
 		// 닫기(X) 가로채기 — Windows 전용 경로(hudHideOnClose=false인 트레이 플랫폼).
 		// 트레이가 있으면 닫기는 종료가 아니라 "트레이로 숨김"이어야 한다. 진짜 종료
@@ -300,6 +298,14 @@ func runController() {
 func positionHUDTopRight(ctx context.Context) {
 	if err := hudpos.PositionPrimaryTopRight("Cross-liveTranslate"); err != nil {
 		log.Println("[controller] HUD 배치:", err)
+	}
+}
+
+// hideHUDFromTaskbar removes the control-HUD taskbar button (Windows 전용).
+// 실패는 무해(로그만) — 작업표시줄에 버튼 하나가 남을 뿐 기능에 지장이 없다.
+func hideHUDFromTaskbar() {
+	if err := hudpos.HideFromTaskbar("Cross-liveTranslate"); err != nil {
+		log.Println("[controller] HUD 작업표시줄 제외:", err)
 	}
 }
 

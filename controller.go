@@ -1019,7 +1019,15 @@ func (c *Controller) toggleHUD() {
 // hideHUD hides the control HUD into the tray. 창의 닫기(X) 버튼 가로채기(main.go
 // OnBeforeClose)가 호출한다 — 닫기는 종료가 아니라 "트레이로 숨김"이어야 하고, 그때도
 // 트레이 체크 표식과 영속 상태가 실제와 어긋나면 안 된다.
-func (c *Controller) hideHUD() { c.setHUDVisible(false) }
+func (c *Controller) hideHUD() {
+	if !c.setHUDVisible(false) {
+		return // 이미 숨겨져 있었다 — 풍선을 중복해서 띄우지 않는다.
+	}
+	// Windows는 작업표시줄 아이콘이 없어(hudpos.HideFromTaskbar) 창을 닫으면 앱이 그냥
+	// 사라진 것처럼 보인다. 어디로 갔는지 트레이 풍선으로 한 번 알려준다(몇 초 뒤 자동 소멸).
+	// darwin/기타는 no-op.
+	tray.Notify("Cross-liveTranslate", "트레이에서 계속 실행 중입니다. 트레이 아이콘을 클릭하면 제어 HUD가 다시 나타납니다.")
+}
 
 // trayReady reports whether the tray is installed and can bring the HUD back.
 func (c *Controller) trayReady() bool { return c.trayOK.Load() }
@@ -1027,18 +1035,16 @@ func (c *Controller) trayReady() bool { return c.trayOK.Load() }
 // setHUDVisible is the single place that changes control-HUD visibility.
 // 창 표시/숨김 · controller 상태 · 트레이 체크 표식 · settings.json 영속을 한 번에 맞춘다
 // (세 곳이 따로 갱신되면 반드시 어긋난다 — 실제로 그 버그가 있었다).
-func (c *Controller) setHUDVisible(vis bool) {
+func (c *Controller) setHUDVisible(vis bool) bool {
 	if c.ctx == nil {
-		return
+		return false
 	}
 	c.mu.Lock()
 	if c.hudVisible == vis {
 		c.mu.Unlock()
-		return
+		return false
 	}
 	c.hudVisible = vis
-	c.settings.HUD.Visible = vis
-	snap := c.settings
 	c.mu.Unlock()
 
 	if vis {
@@ -1048,10 +1054,20 @@ func (c *Controller) setHUDVisible(vis bool) {
 		wruntime.WindowHide(c.ctx)
 	}
 	tray.SetHUDVisible(vis)
-	// 다음 실행이 마지막 표시 상태로 시작하도록 영속한다(main.go hudStartsHidden이 읽는다).
-	// 이 경로는 닫기(X) 가로채기를 통해 **메인 메시지 스레드**에서도 불리므로, 디스크 쓰기로
-	// 메시지 펌프를 붙잡지 않도록 비동기로 넘긴다(Save는 temp+rename 원자적 쓰기라 안전).
-	go c.saveSettings(snap)
+	return true
+}
+
+// HideHUD hides the control HUD into the tray. 제어 HUD의 '닫기(X)' 버튼이 호출하는
+// 바인딩이다(프론트는 Windows에서만 이 버튼을 노출한다 — macOS는 트레이/메뉴바로 닫는다).
+//
+// 트레이가 없으면 숨기지 않는다: HUD는 frameless라 창 UI가 없어서, 숨겨 놓고 트레이도
+// 없으면 앱을 다시 부를 방법이 사라진다(안전장치 — OnBeforeClose와 동일한 판단).
+func (c *Controller) HideHUD() {
+	if !c.trayReady() {
+		log.Println("[controller] HideHUD: 트레이가 없어 숨기지 않는다")
+		return
+	}
+	c.hideHUD()
 }
 
 // -----------------------------------------------------------------------------

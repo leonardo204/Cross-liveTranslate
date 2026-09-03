@@ -86,6 +86,25 @@
       font-size: 10px; font-weight: 600; line-height: 1;
     }
     .update-btn.show { display: inline-flex; }
+    /*
+      닫기(X) 버튼 — Windows 전용. 제어 HUD는 frameless라 타이틀바가 없고, Windows에서는
+      작업표시줄 아이콘도 없애 트레이 상주로 동작한다. 그래서 창을 접을 수단을 HUD 안에
+      직접 둔다. 눌러도 앱은 살아 있고 트레이로 들어간다(Controller.HideHUD).
+      macOS는 메뉴바에서 토글하므로 노출하지 않는다(기본 display:none).
+    */
+    .btn-close {
+      --wails-draggable: no-drag;               /* 드래그 영역에서 제외 — 클릭이 먹어야 한다 */
+      flex: 0 0 auto; display: none;
+      align-items: center; justify-content: center;
+      width: 18px; height: 18px; margin-right: -4px;
+      border: 0; border-radius: 5px; padding: 0;
+      background: transparent; color: var(--secondary);
+      cursor: default;
+    }
+    .btn-close.show { display: inline-flex; }
+    .btn-close:hover { background: var(--red); color: #fff; }
+    .btn-close .ico { display: inline-flex; }
+
     /* 발화 인디케이터: HStack(spacing:3) 아이콘 + 텍스트 */
     .speak { display: flex; align-items: center; gap: 3px; }
     .speak .ico { display: inline-flex; color: var(--secondary); }
@@ -184,6 +203,7 @@
       <span id="speak" class="speak">
         <span class="ico"></span><span class="label">무음</span>
       </span>
+      <button id="close" class="btn-close" type="button" title="트레이로 숨기기"><span class="ico"></span></button>
     </div>
 
     <!-- 2) level meter -->
@@ -236,6 +256,8 @@
 
       // ---- SF Symbol 근사 (인라인 SVG, fill=currentColor) ----
       var ICON = {
+        // 닫기(X) — SF Symbols xmark 근사(12×12 stroke).
+        xmark: '<svg width="10" height="10" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M2.5 2.5 L9.5 9.5 M9.5 2.5 L2.5 9.5" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"/></svg>',
         // circle.fill — 발화중 채운 원
         circleFill: '<svg width="8" height="8" viewBox="0 0 16 16" fill="currentColor"><circle cx="8" cy="8" r="6"/></svg>',
         // circle — 무음 윤곽 원
@@ -342,6 +364,20 @@
         $("toggle").addEventListener("click", function () { var c = ctrl(); if (c) c.ToggleCapture(); });
         $("rec").addEventListener("click", function () { var c = ctrl(); if (c) c.ToggleRecording(); });
         $("gear").addEventListener("click", function () { var c = ctrl(); if (c) c.ShowSettings(); });
+
+        // 닫기(X): Windows에서만 노출한다. 제어 HUD는 frameless(타이틀바 없음)이고
+        // Windows에서는 작업표시줄 아이콘도 없으므로, 창을 접는 유일한 수단이다.
+        // 누르면 앱이 종료되는 게 아니라 트레이로 들어가고 풍선 안내가 뜬다.
+        var closeBtn = $("close");
+        if (closeBtn) {
+          closeBtn.querySelector(".ico").innerHTML = ICON.xmark;
+          if (/Windows/i.test(navigator.userAgent)) {
+            closeBtn.classList.add("show");
+          }
+          closeBtn.addEventListener("click", function () {
+            var c = ctrl(); if (c && c.HideHUD) c.HideHUD();
+          });
+        }
         // 업데이트 배지 클릭 → 스테이징된 업데이트 다운로드/검증/교체 후 앱 재시작.
         $("updateBtn").addEventListener("click", function () {
           var a = appBind(); if (a && a.DownloadAndInstallUpdate) a.DownloadAndInstallUpdate();

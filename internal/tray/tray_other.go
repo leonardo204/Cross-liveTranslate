@@ -16,3 +16,6 @@ func SetRunning(bool) {}
 
 // SetHUDVisible is a no-op stub.
 func SetHUDVisible(bool) {}
+
+// Shutdown is a no-op stub.
+func Shutdown() {}

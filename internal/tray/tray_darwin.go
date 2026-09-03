@@ -60,6 +60,10 @@ func SetHUDVisible(visible bool) {
 	C.lt_tray_set_hud_visible(v)
 }
 
+// Shutdown tears the tray down. macOS는 프로세스 종료 시 NSStatusBar 항목이 함께
+// 사라지므로 별도 정리가 필요 없다(Windows와의 API 대칭을 위해 존재).
+func Shutdown() {}
+
 //export lt_tray_go_toggle_translate
 func lt_tray_go_toggle_translate() { runHandler(handlers.OnToggleTranslate) }
 

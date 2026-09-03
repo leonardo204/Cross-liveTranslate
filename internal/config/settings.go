@@ -156,6 +156,15 @@ type UpdateSettings struct {
 	AutoCheck bool `json:"autoCheck"` // 자동 주기 업데이트 확인(원본 기본 true).
 }
 
+// HUDSettings holds the control-HUD window visibility (트레이 "제어 HUD 표시" 토글).
+//
+// 원본 liveTranslate는 HUDController.isVisible을 영속하지 않고 항상 숨김으로 시작하지만,
+// Windows는 macOS 메뉴바만큼 트레이가 눈에 띄지 않아 "앱이 실행됐는지" 알기 어렵다.
+// 그래서 마지막 표시 상태를 저장했다가 다음 실행에서 복원한다(기본 true = 표시).
+type HUDSettings struct {
+	Visible bool `json:"visible"` // 제어 HUD 창 표시 여부(기본 true).
+}
+
 // Settings is the full persisted user-settings model.
 // 모든 후속 웨이브 기능이 여기에 필드를 꽂는다.
 type Settings struct {
@@ -170,6 +179,7 @@ type Settings struct {
 	VAD       VADSettings       `json:"vad"`
 	Engine    EngineSettings    `json:"engine"`
 	Update    UpdateSettings    `json:"update"`
+	HUD       HUDSettings       `json:"hud"`
 }
 
 // DefaultSettings returns the deterministic first-run defaults.
@@ -243,6 +253,9 @@ func DefaultSettings() Settings {
 		},
 		Update: UpdateSettings{
 			AutoCheck: true, // 원본 SUEnableAutomaticChecks=true — 기본 자동 확인 on.
+		},
+		HUD: HUDSettings{
+			Visible: true, // 첫 실행은 제어 HUD를 띄운다(트레이만으로는 발견성이 낮다).
 		},
 	}
 }

@@ -137,6 +137,11 @@ type Controller struct {
 	// "제어 HUD 표시" 체크 표식 + 토글용). 바인딩/트레이 goroutine이 mu 아래 갱신한다.
 	hudVisible bool
 
+	// trayOK 는 트레이 설치가 실제로 성공했는지다. 실패했는데도 HUD를 숨기면 다시 띄울
+	// 수단이 사라져 앱이 조작 불능이 된다(제어 HUD는 frameless라 창 UI가 없다).
+	// 그래서 닫기 가로채기(main.go OnBeforeClose)가 이 값을 보고 물러선다.
+	trayOK atomic.Bool
+
 	// 자동 주기 업데이트 확인(원본 Sparkle SUEnableAutomaticChecks + SUScheduledCheckInterval).
 	// autoUpdateLoop goroutine이 Settings.Update.AutoCheck면 앱 시작 후 1회 + 24h 주기로
 	// checkUpdateWithCtx를 호출한다. 발견 시 아래 두 필드(mu 보호)를 채우고 emitHUD로 HUD에
@@ -170,16 +175,18 @@ type Controller struct {
 // newController creates a controller with default language/model settings.
 func newController() *Controller {
 	return &Controller{
-		model:            config.GeminiModel,
-		target:           config.DefaultTargetLanguage,
-		source:           config.DefaultSourceLanguage,
-		sel:              audio.Selection{Mode: audio.SelectAuto},
-		status:           "idle",
-		events:           make(chan pipeline.Event, 256),
-		styleCh:          make(chan ipc.StyleMsg, 8),
-		testCh:           make(chan bool, 4),
-		settings:         config.DefaultSettings(),
-		hudVisible:       false, // 원본과 동일하게 HUD는 시작 시 숨김(StartHidden:true). 트레이/캡처로 표시.
+		model:    config.GeminiModel,
+		target:   config.DefaultTargetLanguage,
+		source:   config.DefaultSourceLanguage,
+		sel:      audio.Selection{Mode: audio.SelectAuto},
+		status:   "idle",
+		events:   make(chan pipeline.Event, 256),
+		styleCh:  make(chan ipc.StyleMsg, 8),
+		testCh:   make(chan bool, 4),
+		settings: config.DefaultSettings(),
+		// 실제 초기값은 runController가 hudStartsHidden()으로 정해 덮어쓴다(창의 StartHidden과
+		// 반드시 일치해야 트레이 체크 표식/첫 토글이 헛돌지 않는다).
+		hudVisible:       false,
 		autoUpdateReload: make(chan struct{}, 1),
 	}
 }
@@ -920,6 +927,9 @@ func (c *Controller) cacheAudioBoundary(s config.Settings) {
 // shutdown kills the overlay child and tears down the reconciler. Idempotent.
 func (c *Controller) shutdown() {
 	c.closeOnce.Do(func() {
+		// 트레이 아이콘을 명시적으로 제거한다. 안 하면 Windows 알림 영역에 프로세스가 죽은
+		// 뒤에도 유령 아이콘이 남는다(마우스를 올려야 사라진다).
+		tray.Shutdown()
 		// 자막 녹화 종료 + 누적 비용 영속화(A Wave3) — 종료 시 파일 핸들/누적을 안전히 마감한다.
 		if c.recorder != nil {
 			_ = c.recorder.Stop()
@@ -978,14 +988,13 @@ func (c *Controller) initTray() {
 		OnToggleTranslate: func() { _ = c.ToggleCapture() },
 		OnToggleHUD:       func() { c.toggleHUD() },
 		OnSettings:        func() { c.ShowSettings() },
-		OnQuit: func() {
-			if c.ctx != nil {
-				wruntime.Quit(c.ctx)
-			}
-		},
+		// 트레이 "종료"는 창 닫기 가로채기(OnBeforeClose)를 통과해야 하는 **진짜 종료**다.
+		OnQuit: func() { requestQuit(c.ctx) },
 	})
 	if err != nil {
 		log.Println("[controller] tray init:", err)
+	} else {
+		c.trayOK.Store(true)
 	}
 	tray.SetStatus(c.Status())
 	tray.SetRunning(c.IsRunning())
@@ -995,16 +1004,39 @@ func (c *Controller) initTray() {
 	tray.SetHUDVisible(vis)
 }
 
-// toggleHUD shows/hides the control-HUD window (트레이 "제어 HUD 표시").
-// 표시 상태를 트레이 체크 표식에 반영한다.
+// toggleHUD shows/hides the control-HUD window (트레이 "제어 HUD 표시" · 트레이 아이콘 좌클릭).
 func (c *Controller) toggleHUD() {
+	c.mu.Lock()
+	vis := !c.hudVisible
+	c.mu.Unlock()
+	c.setHUDVisible(vis)
+}
+
+// hideHUD hides the control HUD into the tray. 창의 닫기(X) 버튼 가로채기(main.go
+// OnBeforeClose)가 호출한다 — 닫기는 종료가 아니라 "트레이로 숨김"이어야 하고, 그때도
+// 트레이 체크 표식과 영속 상태가 실제와 어긋나면 안 된다.
+func (c *Controller) hideHUD() { c.setHUDVisible(false) }
+
+// trayReady reports whether the tray is installed and can bring the HUD back.
+func (c *Controller) trayReady() bool { return c.trayOK.Load() }
+
+// setHUDVisible is the single place that changes control-HUD visibility.
+// 창 표시/숨김 · controller 상태 · 트레이 체크 표식 · settings.json 영속을 한 번에 맞춘다
+// (세 곳이 따로 갱신되면 반드시 어긋난다 — 실제로 그 버그가 있었다).
+func (c *Controller) setHUDVisible(vis bool) {
 	if c.ctx == nil {
 		return
 	}
 	c.mu.Lock()
-	vis := !c.hudVisible
+	if c.hudVisible == vis {
+		c.mu.Unlock()
+		return
+	}
 	c.hudVisible = vis
+	c.settings.HUD.Visible = vis
+	snap := c.settings
 	c.mu.Unlock()
+
 	if vis {
 		wruntime.WindowShow(c.ctx)
 		wruntime.WindowUnminimise(c.ctx)
@@ -1012,6 +1044,10 @@ func (c *Controller) toggleHUD() {
 		wruntime.WindowHide(c.ctx)
 	}
 	tray.SetHUDVisible(vis)
+	// 다음 실행이 마지막 표시 상태로 시작하도록 영속한다(main.go hudStartsHidden이 읽는다).
+	// 이 경로는 닫기(X) 가로채기를 통해 **메인 메시지 스레드**에서도 불리므로, 디스크 쓰기로
+	// 메시지 펌프를 붙잡지 않도록 비동기로 넘긴다(Save는 temp+rename 원자적 쓰기라 안전).
+	go c.saveSettings(snap)
 }
 
 // -----------------------------------------------------------------------------

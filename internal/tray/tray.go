@@ -7,7 +7,9 @@
 //
 //	tray_darwin.go/.h/.m   darwin  — NSStatusBar(cgo). Wails의 NSApp 런루프와 공존
 //	                                  (별도 런루프 없이 main 큐에 status item 부착).
-//	tray_windows.go        windows — 최소 stub(실측 대기; systray는 별도 런루프라 보류).
+//	tray_windows.go        windows — Shell_NotifyIcon(순수 Go syscall). 전용 OS 스레드에서
+//	                                  숨김 창 + 자체 메시지 루프를 돌려 Wails 메시지 펌프와
+//	                                  완전히 격리한다(cgo 없음 → 크로스빌드 유지).
 //	tray_other.go          그 외    — stub.
 //
 // 이 파일(순수)은 공용 타입만 정의해 모든 플랫폼에서 공유한다.

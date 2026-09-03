@@ -38,8 +38,10 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync/atomic"
 
 	"cross-livetranslate/internal/activation"
+	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/hudpos"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/overlay"
@@ -62,15 +64,50 @@ var assets embed.FS
 // 로그(권한/연결/첫 청크/영구실패)는 항상 남기고, 프레임 단위 로그는 CLT_VERBOSE=1일 때만.
 var logVerbose = os.Getenv("CLT_VERBOSE") == "1"
 
-// hudStartHidden: 제어 HUD를 시작 시 숨길지. darwin은 트레이(NSStatusBar)로 HUD를
-// 띄우므로 숨긴다(원본 동작). Windows/기타는 트레이가 stub이라 숨기면 창을 띄울 수단이
-// 없으므로 처음부터 표시한다. (Windows 트레이 구현 시 false로 되돌린다.)
-var hudStartHidden = runtime.GOOS == "darwin"
+// trayCapable reports whether this platform has a real system tray that can bring a
+// hidden control HUD back. darwin=NSStatusBar, windows=Shell_NotifyIcon(internal/tray).
+// 트레이가 없는 플랫폼에서 HUD를 숨기면 되살릴 수단이 없으므로 아래 정책이 이 값에 걸린다.
+var trayCapable = runtime.GOOS == "darwin" || runtime.GOOS == "windows"
 
-// hudHideOnClose: 제어 HUD 닫기 시 숨김(true) vs 종료(false). darwin은 트레이로 다시 띄울
-// 수 있어 숨김. Windows/기타는 트레이가 stub이라 숨기면 되살릴 수 없으므로 닫기=종료로 둔다
-// (그렇지 않으면 닫아도 프로세스가 계속 남는다). Windows 트레이 구현 시 재검토.
+// hudHideOnClose: 제어 HUD 닫기(X)를 Wails에게 맡겨 숨기게 할지(true) 종료할지(false).
+//
+// darwin은 기존 동작 그대로 Wails에 맡긴다. Windows는 false로 두고 OnBeforeClose에서 직접
+// 가로챈다 — Wails의 HideWindowOnClose 경로는 창을 숨기기만 하고 OnBeforeClose를 호출하지
+// 않아(v2.12 windows/frontend.go의 OnClose 바인딩) 트레이 체크 표식이 실제 표시 상태와
+// 어긋나기 때문이다. 가로채기 경로는 숨김과 동시에 상태·체크 표식을 함께 갱신한다.
 var hudHideOnClose = runtime.GOOS == "darwin"
+
+// quitRequested 는 "정말 종료"(트레이 종료 메뉴 · 업데이트 설치)와 "창 닫기"를 구분한다.
+// OnBeforeClose는 창 닫기만 가로채야 하므로, 진짜 종료 경로는 requestQuit로 이 깃발을 먼저
+// 세운다. 그러지 않으면 트레이로 숨기기만 하다가 앱을 영영 종료할 수 없다.
+var quitRequested atomic.Bool
+
+// requestQuit terminates the app for real, bypassing the close-to-tray intercept.
+func requestQuit(ctx context.Context) {
+	quitRequested.Store(true)
+	if ctx != nil {
+		wruntime.Quit(ctx)
+	}
+}
+
+// hudStartsHidden decides the initial control-HUD visibility.
+//
+//	트레이 없음  → 항상 표시(숨기면 다시 띄울 수단이 없다)
+//	darwin       → 항상 숨김(원본 HUDController.isVisible=false 그대로)
+//	windows      → 마지막 상태 복원(트레이 "제어 HUD 표시" 토글이 settings.json에 영속된다)
+func hudStartsHidden() bool {
+	if !trayCapable {
+		return false
+	}
+	if runtime.GOOS == "darwin" {
+		return true
+	}
+	s, err := config.Load()
+	if err != nil {
+		return false
+	}
+	return !s.HUD.Visible
+}
 
 // init forces Go's pure-Go DNS resolver instead of the macOS cgo resolver
 // (getaddrinfo). 근본 버그 수정: 번역 시작 시 malgo(CoreAudio) 오디오 초기화와 gemini
@@ -185,6 +222,12 @@ func runController() {
 	app.ctrl = ctrl
 	ctrl.app = app // 설정 창의 '지금 설치'를 controller 경유로 실행하기 위한 참조.
 
+	// 초기 HUD 표시 상태를 먼저 정해 Wails 옵션(StartHidden)과 controller 상태(트레이 체크
+	// 표식의 진실원)를 일치시킨다. 예전에는 Windows에서 창은 보이는데 hudVisible=false라
+	// 첫 토글이 "숨기기"가 아니라 "보이기"로 헛돌았다.
+	startHidden := hudStartsHidden()
+	ctrl.hudVisible = !startHidden
+
 	err := wails.Run(&options.App{
 		Title:       "Cross-liveTranslate",
 		Width:       hudWidth,
@@ -194,7 +237,7 @@ func runController() {
 		// 원본 HUDController.isVisible=false — macOS는 시작 시 제어 HUD를 숨기고 트레이로
 		// 띄운다. 그러나 Windows는 트레이가 아직 stub(no-op)이라 숨기면 창을 띄울 수단이 없어
 		// 앱이 보이지 않게 실행된다. 따라서 트레이가 없는 플랫폼에서는 HUD를 처음부터 표시한다.
-		StartHidden: hudStartHidden,
+		StartHidden: startHidden,
 		// macOS는 트레이로 HUD를 다시 띄울 수 있어 닫기=숨김(HideWindowOnClose:true)이 맞다.
 		// Windows는 트레이가 stub이라 닫으면 되살릴 수단이 없다 → 닫기=종료로 두어야 앱과
 		// 자식 프로세스가 정상 정리된다(닫아도 숨기만 하면 프로세스가 계속 남는 문제 해결).
@@ -221,6 +264,18 @@ func runController() {
 		OnDomReady: func(ctx context.Context) {
 			// 창이 realize된 뒤 배치해야 Wails의 기본(중앙) 초기 배치에 덮어써지지 않는다.
 			positionHUDTopRight(ctx)
+		},
+		// 닫기(X) 가로채기 — Windows 전용 경로(hudHideOnClose=false인 트레이 플랫폼).
+		// 트레이가 있으면 닫기는 종료가 아니라 "트레이로 숨김"이어야 한다. 진짜 종료
+		// (트레이 종료 메뉴 · 업데이트 설치)는 requestQuit가 quitRequested를 세워 통과시킨다.
+		OnBeforeClose: func(ctx context.Context) bool {
+			// 트레이 설치가 실패했다면 가로채지 않는다 — HUD는 frameless라 창 UI가 없어서,
+			// 숨겨 놓고 트레이도 없으면 앱을 다시 부를 방법이 사라진다.
+			if trayCapable && !hudHideOnClose && ctrl.trayReady() && !quitRequested.Load() {
+				ctrl.hideHUD()
+				return true // 종료를 막는다.
+			}
+			return false
 		},
 		OnShutdown: func(ctx context.Context) {
 			ctrl.shutdown()

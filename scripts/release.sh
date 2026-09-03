@@ -173,7 +173,17 @@ if [[ "${SKIP_WINDOWS:-0}" != "1" ]] && command -v "$WIN_CC" >/dev/null 2>&1; th
     rm -f "$ROOT/build/windows/icon.ico"
   fi
   win_nsis=""
-  command -v makensis >/dev/null 2>&1 && win_nsis="-nsis" || warn "makensis 없음 — 인스톨러 스킵(포터블만)"
+  # SKIP_NSIS=1: NSIS 인스톨러 생성을 건너뛴다. makensis가 std::bad_alloc로 죽으면 wails가
+  # 빌드 전체를 실패로 처리해, 이미 만들어진 포터블 exe까지 버려지기 때문이다.
+  # 자동 업데이트는 포터블 self-apply 경로를 쓰므로 인스톨러가 빠져도 영향이 없고,
+  # 인스톨러는 나중에 scripts/add-windows-asset.sh로 따로 붙일 수 있다.
+  if [[ "${SKIP_NSIS:-0}" == "1" ]]; then
+    warn "SKIP_NSIS=1 — NSIS 인스톨러 생성 생략(포터블 exe만 빌드)"
+  elif command -v makensis >/dev/null 2>&1; then
+    win_nsis="-nsis"
+  else
+    warn "makensis 없음 — 인스톨러 스킵(포터블만)"
+  fi
   CGO_ENABLED=1 CC="$WIN_CC" CXX="${WIN_CXX:-x86_64-w64-mingw32-g++}" \
     PATH="$PATH_WITH_GO:/opt/homebrew/bin" wails build \
       -platform windows/amd64 \

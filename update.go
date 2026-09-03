@@ -14,8 +14,6 @@ import (
 	"time"
 
 	"cross-livetranslate/internal/updater"
-
-	wailsruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
 
 // appVersion is set via -ldflags "-X main.appVersion=x.y.z" at build time.
@@ -158,9 +156,10 @@ func (a *App) DownloadAndInstallUpdate() error {
 		if a.ctrl != nil {
 			a.ctrl.shutdown()
 		}
-		if a.ctx != nil {
-			wailsruntime.Quit(a.ctx)
-		}
+		// 창 닫기 가로채기(main.go OnBeforeClose)를 통과해야 하는 **진짜 종료**다.
+		// 트레이가 생긴 뒤로 wruntime.Quit만으로는 숨김에 그쳐 self-apply 헬퍼가 잠긴
+		// exe를 영영 교체하지 못한다.
+		requestQuit(a.ctx)
 		// Safety net: the swap helper waits for THIS process to exit before it
 		// can replace the (locked) running .exe. If Quit() did not fully
 		// terminate us, force exit so the file lock is released and the helper

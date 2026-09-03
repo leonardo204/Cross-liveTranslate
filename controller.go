@@ -211,6 +211,10 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	// 파일시스템 조회가 섞여 있으므로 시작 경로를 막지 않도록 goroutine으로 돌린다.
 	go txlog.Logf("update.target", "%s", updater.InstallTargetDiagnostics())
 
+	// 이전 자동 업데이트가 남긴 <exe>.old 를 치운다(Windows 전용 — 교체 직후에는 옛 이미지가
+	// 아직 매핑돼 있어 지워지지 않는다). 다른 플랫폼에서는 no-op.
+	go updater.CleanupStaleBackup()
+
 	// 설정을 먼저 로드해 적용한다(Wave 1). 실패해도 기본값으로 HUD는 뜬다.
 	settings, serr := config.Load()
 	if serr != nil {

@@ -21,6 +21,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -147,7 +148,19 @@ func (s *SettingsAPI) SaveAPIKey(key string) error {
 
 // TestAPIKey verifies a key and returns "" on success or a user-facing(키 비포함)
 // error message. 키 값은 결코 로그/반환값에 노출하지 않는다.
+//
+// 입력칸이 비어 있으면 **저장된 키**(환경변수 → OS 자격증명 저장소)로 검사한다.
+// 보안상 저장된 키는 화면에 표시하지 않으므로 앱을 켜면 입력칸이 늘 비어 있는데, 예전에는
+// 그 빈 값을 그대로 검사해 "API 키가 비어 있습니다"가 떴다. 사용자는 멀쩡히 저장돼 있는 키가
+// 사라진 것으로 오해하고 지운 뒤 다시 입력했다(실제 관측된 문제).
 func (s *SettingsAPI) TestAPIKey(key string) string {
+	if strings.TrimSpace(key) == "" {
+		stored, err := config.APIKey()
+		if err != nil || strings.TrimSpace(stored) == "" {
+			return "저장된 키가 없습니다. 키를 입력한 뒤 다시 시도하세요"
+		}
+		key = stored
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	if err := config.TestAPIKey(ctx, key); err != nil {

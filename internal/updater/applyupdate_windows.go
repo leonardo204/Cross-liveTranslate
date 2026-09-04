@@ -250,7 +250,15 @@ func relaunchApp(target string, elevated bool) error {
 			return nil
 		} else {
 			// 셸 경유가 막히면(그룹 정책 등) 관리자 권한으로라도 앱은 살려 둔다.
-			Logf("[apply] explorer 경유 재실행 실패 — 직접 실행으로 폴백: %v", err)
+			//
+			// 다만 이 경로로 뜬 앱은 승격된 토큰을 그대로 물려받는다. 자격 증명 저장소
+			// (Windows Credential Manager)는 계정별로 분리돼 있어, UAC를 로그인 사용자가
+			// 아닌 **다른 관리자 계정**으로 승인했다면 저장해 둔 Gemini API 키가 보이지
+			// 않는다("업데이트했더니 키가 사라졌다"의 유일하게 실재하는 경로다).
+			// 원인 추적이 가능하도록 트랜잭션 로그에도 함께 남긴다.
+			logBoth("update.apply",
+				"[apply] explorer 경유 재실행 실패 — 관리자 권한 그대로 실행한다(자격 증명 저장소가 "+
+					"다른 계정이면 저장된 API 키가 보이지 않을 수 있다): %v", err)
 		}
 	}
 

@@ -574,7 +574,7 @@
             </div>
             <div class="row" id="rowTestStatus"><span class="status" id="testStatus"></span></div>
             <div class="row" id="rowKeyMsg"><span class="cap" id="keyMsg"></span></div>
-            <div class="row"><span class="cap">키를 입력하고 먼저 연결 테스트에 성공해야 저장할 수 있습니다.</span></div>
+            <div class="row"><span class="cap">키를 입력하고 먼저 연결 테스트에 성공해야 저장할 수 있습니다. 입력칸을 비운 채 연결 테스트를 누르면 이미 저장된 키가 잘 동작하는지 확인합니다.</span></div>
             <div class="row"><span class="cap">보안을 위해 키 값은 표시하지 않습니다. 저장된 키는 OS 자격증명 저장소(Keychain 등)에 보관됩니다.</span></div>
           </div>
         </div>
@@ -650,6 +650,8 @@
       let saveTimer = null;  // 디바운스 저장
       let keyLabel = "없음";
       let testState = "idle"; // idle|testing|success|failure
+      // 직전 연결 테스트가 입력칸이 아니라 **저장된 키**를 검사했는지. 결과 문구를 가른다.
+      let testedStored = false;
       let testMsg = "";
 
       // ---- hex 헬퍼 ----
@@ -855,7 +857,8 @@
         if (testState === "testing") {
           el.innerHTML = '<span class="spin"></span><span class="sec">테스트 중…</span>';
         } else if (testState === "success") {
-          el.innerHTML = '<span class="dot green"></span><span class="green">연결됨</span>';
+          el.innerHTML = '<span class="dot green"></span><span class="green">'
+            + (testedStored ? "저장된 키로 연결됨" : "연결됨") + '</span>';
         } else if (testState === "failure") {
           el.innerHTML = '<span class="dot red"></span><span class="red">연결 실패: ' + testMsg + '</span>';
         }
@@ -1141,9 +1144,12 @@
         $("linkSys").addEventListener("click", () => a().OpenSystemSettings("microphone"));
 
         // API 키
-        $("inKey").addEventListener("input", () => { testState = "idle"; testMsg = ""; $("keyMsg").textContent = ""; renderTestStatus(); renderKeyButtons(); });
+        $("inKey").addEventListener("input", () => { testState = "idle"; testedStored = false; testMsg = ""; $("keyMsg").textContent = ""; renderTestStatus(); renderKeyButtons(); });
         $("btnTestKey").addEventListener("click", async () => {
           const a = api(); if (!a) return;
+          // 입력칸이 비어 있으면 백엔드가 저장된 키로 검사한다. 무엇을 검사했는지
+          // 결과 문구에 밝혀야, 저장된 키가 멀쩡한데도 사라진 것으로 오해하지 않는다.
+          testedStored = $("inKey").value.trim().length === 0;
           testState = "testing"; renderTestStatus(); renderKeyButtons();
           try {
             const msg = await a.TestAPIKey($("inKey").value);

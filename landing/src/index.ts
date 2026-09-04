@@ -289,7 +289,7 @@ ${ld}
 </div></header>
 ${opts.body}
 <footer><div class="wrap">
-  <span>© 2026 zerolive.co.kr · 개인 개발 프로젝트</span>
+  <span>© 2026 zerolive.co.kr</span>
   <span>
     <a href="${REPO}" rel="noopener">GitHub</a> &nbsp;·&nbsp;
     <a href="/privacy">개인정보처리방침</a> &nbsp;·&nbsp;

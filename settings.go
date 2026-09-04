@@ -340,6 +340,10 @@ func runSettingsControlLoop(ctx context.Context) {
 				activation.Set(activation.Accessory)
 			case "quit":
 				wruntime.Quit(ctx)
+			case "reload":
+				// controller가 스스로 settings.json을 고쳤다(제어 HUD 자리·녹화 토글 등).
+				// 열려 있는 설정 창이 옛 값을 되쓰지 않도록 파일을 다시 읽게 한다.
+				wruntime.EventsEmit(ctx, "settings:reload")
 			case "running-on":
 				// 번역 실행 중 — '테스트 자막 표시' 토글을 비활성화하도록 프론트에 통지.
 				wruntime.EventsEmit(ctx, "running:update", true)

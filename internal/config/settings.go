@@ -98,9 +98,15 @@ type CostSettings struct {
 	CumulativeUSD float64 `json:"cumulativeUSD"` // 누적 비용(USD, 영속).
 }
 
-// RecordingSettings holds subtitle-recording output location (원본 recording.directory).
+// RecordingSettings holds subtitle-recording output location (원본 recording.directory)
+// + 마지막 녹화 토글 상태.
 type RecordingSettings struct {
 	Directory string `json:"directory"` // 기본 사용자 Documents.
+
+	// Enabled 는 제어 HUD '녹화' 토글의 마지막 상태다(기본 false). 켜 둔 채 앱을 끄면
+	// 다음 실행에서 녹화가 다시 켜진 상태로 시작한다(새 타임스탬프 파일).
+	// 녹화기는 첫 확정 자막이 나올 때 파일을 만들므로, 켜 두기만 해도 빈 파일이 쌓이지 않는다.
+	Enabled bool `json:"enabled"`
 }
 
 // VADSettings holds voice-activity-detection gate toggle (Wave 3에서 배선).
@@ -169,6 +175,14 @@ type HUDSettings struct {
 	Visible           bool `json:"visible"`
 	AutoShowOnCapture bool `json:"autoShowOnCapture"`
 	HideOnStop        bool `json:"hideOnStop"`
+
+	// X/Y 는 제어 HUD 창을 마지막으로 놓아둔 자리다(전역 화면 좌표, 플랫폼 원점 그대로).
+	// HasPosition 이 false면 저장된 자리가 없다는 뜻이라 기본 위치(주 화면 우상단)에 놓는다.
+	// 설정 창의 '위치 리셋'이 HasPosition 을 false로 되돌린다. 저장한 자리가 지금 화면
+	// 밖이면(모니터를 뺐을 때) 복원하지 않고 기본 위치로 간다 — 창을 잃어버리지 않기 위해서다.
+	X           int  `json:"x"`
+	Y           int  `json:"y"`
+	HasPosition bool `json:"hasPosition"`
 }
 
 // Settings is the full persisted user-settings model.
@@ -243,6 +257,7 @@ func DefaultSettings() Settings {
 		},
 		Recording: RecordingSettings{
 			Directory: defaultRecordingDir(),
+			Enabled:   false, // 첫 실행은 녹화 꺼짐(원본 동작).
 		},
 		VAD: VADSettings{
 			Enabled: true, // 원본 VAD 기본 on(발화 구간만 전송해 비용 절감). 끄면 전 구간 통과.

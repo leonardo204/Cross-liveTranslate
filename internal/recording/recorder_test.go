@@ -107,3 +107,43 @@ func TestStartIdempotent(t *testing.T) {
 		t.Error("second file should have content")
 	}
 }
+
+// 녹화를 켜 두기만 하고 자막이 한 줄도 오지 않으면 파일을 만들지 않는다.
+// (녹화 상태를 다음 실행까지 기억하게 되면서, 켤 때마다 빈 파일이 쌓이던 문제를 막는다.)
+func TestArmedWithoutWriteCreatesNoFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "empty.txt")
+	r := New()
+	if err := r.Start(path, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	if !r.IsRecording() {
+		t.Fatal("Start 뒤에는 녹화 중이어야 한다")
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("자막이 없는데 파일이 생겼다: %v", err)
+	}
+	if err := r.Stop(); err != nil {
+		t.Fatalf("Stop: %v", err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("Stop 뒤에도 파일이 없어야 한다: %v", err)
+	}
+	if r.IsRecording() {
+		t.Fatal("Stop 뒤에는 녹화 중이 아니어야 한다")
+	}
+}
+
+// 첫 자막이 들어온 순간 파일이 만들어지고 헤더와 본문이 함께 기록된다.
+func TestFirstLineCreatesFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "late.txt")
+	r := New()
+	if err := r.Start(path, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	r.WriteLine(time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC), "hello", "안녕")
+	got := read(t, path)
+	if !strings.Contains(got, "녹화 시작") || !strings.Contains(got, "hello → 안녕") {
+		t.Fatalf("헤더/본문이 없다:\n%s", got)
+	}
+	_ = r.Stop()
+}

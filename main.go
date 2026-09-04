@@ -90,6 +90,10 @@ func requestQuit(ctx context.Context) {
 	}
 }
 
+// hudWindowTitle 은 제어 HUD 창의 제목이다. 네이티브 창 조작(hudpos)이 이 제목으로 창을
+// 찾으므로 wails.Run 의 Title 과 반드시 같아야 한다.
+const hudWindowTitle = "Cross-liveTranslate"
+
 // hudStartsHidden decides the initial control-HUD visibility.
 //
 //	트레이 없음 → 항상 표시(숨기면 다시 띄울 수단이 없다)
@@ -263,7 +267,8 @@ func runController() {
 		},
 		OnDomReady: func(ctx context.Context) {
 			// 창이 realize된 뒤 배치해야 Wails의 기본(중앙) 초기 배치에 덮어써지지 않는다.
-			positionHUDTopRight(ctx)
+			// 지난번에 놓아둔 자리가 있으면 그리로, 없으면 기본 위치(주 화면 우상단)로.
+			ctrl.restoreHUDPosition()
 			// 트레이 상주 앱 — 제어 HUD는 작업표시줄/Alt+Tab에 자리를 차지하지 않는다
 			// (원본 macOS accessory 앱 동작의 Windows 등가물). 그 외 플랫폼은 no-op.
 			hideHUDFromTaskbar()
@@ -301,7 +306,7 @@ func runController() {
 // (3모니터 환경에서 관측됨). NSScreen 기반 네이티브 배치(hudpos)로 주 모니터 visibleFrame
 // 우상단에 확실히 놓는다.
 func positionHUDTopRight(ctx context.Context) {
-	if err := hudpos.PositionPrimaryTopRight("Cross-liveTranslate"); err != nil {
+	if err := hudpos.PositionPrimaryTopRight(hudWindowTitle); err != nil {
 		log.Println("[controller] HUD 배치:", err)
 	}
 }
@@ -309,7 +314,7 @@ func positionHUDTopRight(ctx context.Context) {
 // hideHUDFromTaskbar removes the control-HUD taskbar button (Windows 전용).
 // 실패는 무해(로그만) — 작업표시줄에 버튼 하나가 남을 뿐 기능에 지장이 없다.
 func hideHUDFromTaskbar() {
-	if err := hudpos.HideFromTaskbar("Cross-liveTranslate"); err != nil {
+	if err := hudpos.HideFromTaskbar(hudWindowTitle); err != nil {
 		log.Println("[controller] HUD 작업표시줄 제외:", err)
 	}
 }

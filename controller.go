@@ -35,6 +35,7 @@ import (
 	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/cost"
 	"cross-livetranslate/internal/gemini"
+	"cross-livetranslate/internal/hudpos"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/permission"
 	"cross-livetranslate/internal/pipeline"
@@ -259,6 +260,21 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	c.mu.Unlock()
 	c.estimator = cost.New(seedCum)
 	c.recorder = recording.New()
+
+	// 녹화를 켜 둔 채 껐다면 그대로 켜진 상태로 시작한다(새 타임스탬프 파일).
+	// 실제 파일은 첫 확정 자막에서 만들어지므로, 말이 없으면 빈 파일이 생기지 않는다.
+	c.mu.Lock()
+	recOn := c.settings.Recording.Enabled
+	c.mu.Unlock()
+	if recOn {
+		if err := c.StartRecording("", false); err != nil {
+			log.Println("[controller] 지난 녹화 상태 복원 실패:", err)
+		}
+	}
+
+	// 제어 HUD를 드래그로 옮긴 자리를 주기적으로 기억한다(창에 타이틀바가 없어 드래그 종료
+	// 이벤트를 받을 수 없다). 자리가 바뀐 경우에만 파일을 쓴다.
+	go c.hudPositionWatcher(ctx)
 
 	// 팩토리 주입: reconciler는 gemini/malgo에 직접 의존하지 않는다(headless와 동일).
 	newProvider := func(cfg app.ProviderConfig) (pipeline.Provider, error) {
@@ -943,6 +959,8 @@ func (c *Controller) cacheAudioBoundary(s config.Settings) {
 // shutdown kills the overlay child and tears down the reconciler. Idempotent.
 func (c *Controller) shutdown() {
 	c.closeOnce.Do(func() {
+		// 종료 직전 제어 HUD가 놓인 자리를 기억한다(감시 주기 사이에 껐어도 남는다).
+		c.captureHUDPosition()
 		// 트레이 아이콘을 명시적으로 제거한다. 안 하면 Windows 알림 영역에 프로세스가 죽은
 		// 뒤에도 유령 아이콘이 남는다(마우스를 올려야 사라진다).
 		tray.Shutdown()
@@ -1047,12 +1065,101 @@ func (c *Controller) trayReady() bool { return c.trayOK.Load() }
 // resetHUDPosition moves the control HUD back to its default spot (주 화면 우상단).
 // 설정 창의 "위치 리셋" 버튼이 control("hud-reset")으로 호출한다. 숨겨져 있으면 먼저
 // 띄운다 — 보이지 않는 창을 옮기면 사용자는 아무 일도 일어나지 않은 것으로 본다.
+// 저장해 둔 자리도 함께 지운다(안 지우면 감시 goroutine이 곧 다시 덮어쓴다).
 func (c *Controller) resetHUDPosition() {
 	if c.ctx == nil {
 		return
 	}
+	c.mu.Lock()
+	c.settings.HUD.HasPosition = false
+	c.settings.HUD.X, c.settings.HUD.Y = 0, 0
+	snap := c.settings
+	c.mu.Unlock()
+	c.saveSettings(snap)
+
 	c.setHUDVisible(true)
 	positionHUDTopRight(c.ctx)
+}
+
+// restoreHUDPosition puts the control HUD back where the user last left it.
+// 창이 화면에 올라온 직후(OnDomReady) 한 번 호출한다. 저장된 자리가 없거나, 그 자리가
+// 지금 붙어 있는 화면 밖이면(모니터를 뺐을 때) 기본 위치(주 화면 우상단)로 간다.
+func (c *Controller) restoreHUDPosition() {
+	if c.ctx == nil {
+		return
+	}
+	c.mu.Lock()
+	has := c.settings.HUD.HasPosition
+	x, y := c.settings.HUD.X, c.settings.HUD.Y
+	c.mu.Unlock()
+
+	if !has {
+		positionHUDTopRight(c.ctx)
+		return
+	}
+	err := hudpos.SetWindowOrigin(hudWindowTitle, x, y)
+	if err == nil {
+		return
+	}
+	if errors.Is(err, hudpos.ErrOffScreen) {
+		log.Printf("[controller] 저장된 HUD 위치(%d,%d)가 화면 밖 — 기본 위치로 되돌린다", x, y)
+		c.mu.Lock()
+		c.settings.HUD.HasPosition = false
+		snap := c.settings
+		c.mu.Unlock()
+		c.saveSettings(snap)
+	} else if !errors.Is(err, hudpos.ErrUnsupported) {
+		log.Println("[controller] HUD 위치 복원:", err)
+	}
+	positionHUDTopRight(c.ctx)
+}
+
+// captureHUDPosition remembers where the control HUD is right now so the next
+// launch puts it back there. 창이 숨겨져 있으면 읽지 않는다(숨긴 창의 좌표는 의미가 없다).
+//
+// **c.mu 를 쥔 채 hudpos 를 부르지 않는다.** darwin 구현이 메인 스레드로 hop 하는데,
+// 그 메인 스레드가 닫기(X) 처리 중 c.mu 를 기다리고 있으면 서로 물린다.
+func (c *Controller) captureHUDPosition() {
+	c.mu.Lock()
+	vis := c.hudVisible
+	c.mu.Unlock()
+	if !vis {
+		return
+	}
+
+	x, y, err := hudpos.WindowOrigin(hudWindowTitle)
+	if err != nil {
+		return // 미지원 플랫폼이거나 창을 못 찾았다 — 위치 기억은 부가 기능이라 조용히 넘어간다.
+	}
+
+	c.mu.Lock()
+	if c.settings.HUD.HasPosition && c.settings.HUD.X == x && c.settings.HUD.Y == y {
+		c.mu.Unlock()
+		return // 그대로다 — 파일을 다시 쓰지 않는다.
+	}
+	c.settings.HUD.X, c.settings.HUD.Y = x, y
+	c.settings.HUD.HasPosition = true
+	snap := c.settings
+	c.mu.Unlock()
+
+	c.saveSettings(snap)
+	c.sendSettingsControl("reload") // 설정 창이 열려 있으면 최신 값으로 다시 읽게 한다.
+}
+
+// hudPositionWatcher periodically records the control HUD's spot so a drag is not
+// lost when the app quits. 창에는 타이틀바가 없어(frameless) 드래그 종료 이벤트를 받을 수
+// 없으므로 주기적으로 확인한다. 자리가 바뀌었을 때만 파일을 쓴다(드래그는 드물다).
+func (c *Controller) hudPositionWatcher(ctx context.Context) {
+	ticker := time.NewTicker(2 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			c.captureHUDPosition()
+		}
+	}
 }
 
 // setHUDVisible is the single place that changes control-HUD visibility.
@@ -1076,6 +1183,15 @@ func (c *Controller) setHUDVisible(vis bool) bool {
 		wruntime.WindowShow(c.ctx)
 		wruntime.WindowUnminimise(c.ctx)
 	} else {
+		// 숨기고 나면 좌표를 읽을 수 없으므로 지금 기억해 둔다(감시 주기 사이에 숨겨도
+		// 마지막 자리가 남는다). hudVisible 은 이미 false라 captureHUDPosition 을 쓸 수 없다.
+		if x, y, err := hudpos.WindowOrigin(hudWindowTitle); err == nil {
+			c.mu.Lock()
+			c.settings.HUD.X, c.settings.HUD.Y = x, y
+			c.settings.HUD.HasPosition = true
+			snap = c.settings
+			c.mu.Unlock()
+		}
 		wruntime.WindowHide(c.ctx)
 	}
 	tray.SetHUDVisible(vis)
@@ -1592,7 +1708,8 @@ func (c *Controller) StartRecording(filename string, appendMode bool) error {
 	if err := c.recorder.Start(path, appendMode); err != nil {
 		return err
 	}
-	log.Printf("[controller] 자막 녹화 시작: %s (append=%v)", path, appendMode)
+	log.Printf("[controller] 자막 녹화 예약: %s (append=%v) — 첫 확정 자막에서 파일을 만든다", path, appendMode)
+	c.setRecordingEnabled(true)
 	c.emitRecording()
 	return nil
 }
@@ -1604,8 +1721,27 @@ func (c *Controller) StopRecording() error {
 	}
 	err := c.recorder.Stop()
 	log.Println("[controller] 자막 녹화 종료")
+	if oerr := c.recorder.OpenError(); oerr != nil {
+		log.Println("[controller] 자막 녹화 파일을 만들지 못했습니다:", oerr)
+	}
+	c.setRecordingEnabled(false)
 	c.emitRecording()
 	return err
+}
+
+// setRecordingEnabled persists the 녹화 토글 상태 so the next launch starts the same
+// way. 값이 그대로면 파일을 다시 쓰지 않는다.
+func (c *Controller) setRecordingEnabled(on bool) {
+	c.mu.Lock()
+	if c.settings.Recording.Enabled == on {
+		c.mu.Unlock()
+		return
+	}
+	c.settings.Recording.Enabled = on
+	snap := c.settings
+	c.mu.Unlock()
+	c.saveSettings(snap)
+	c.sendSettingsControl("reload") // 설정 창이 열려 있으면 최신 값으로 다시 읽게 한다.
 }
 
 // ToggleRecording flips subtitle recording on/off (제어 HUD 녹화 토글 버튼).

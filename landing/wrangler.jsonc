@@ -1,0 +1,21 @@
+{
+	"$schema": "node_modules/wrangler/config-schema.json",
+	"name": "live-translate",
+	"main": "src/index.ts",
+	"compatibility_date": "2026-08-24",
+	"compatibility_flags": ["nodejs_compat"],
+	"assets": {
+		"directory": "./public",
+		"binding": "ASSETS"
+	},
+	"observability": {
+		"enabled": true
+	},
+	// 이 worker는 Cross-liveTranslate 랜딩·개인정보처리방침·다운로드 리다이렉트만 맡는다.
+	"routes": [
+		{
+			"pattern": "live-translate.zerolive.co.kr",
+			"custom_domain": true
+		}
+	]
+}

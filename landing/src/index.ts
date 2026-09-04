@@ -17,6 +17,8 @@
  * 대신 파일명이 고정인 latest.json 을 읽어 실제 자산 주소를 얻는다.
  */
 
+
+import { sendHit } from "./hit";
 const SITE = "https://live-translate.zerolive.co.kr";
 const REPO = "https://github.com/leonardo204/Cross-liveTranslate";
 const RELEASES = REPO + "/releases";
@@ -28,6 +30,8 @@ const FALLBACK_VERSION = "1.6.0";
 
 interface Env {
 	ASSETS: Fetcher;
+	/** 방문 기록을 대시보드로 보낼 때 쓰는 토큰(secret). 없으면 기록을 보내지 않는다. */
+	TRAFFIC_TOKEN?: string;
 }
 
 interface Manifest {
@@ -119,7 +123,8 @@ function isInsecure(request: Request, url: URL): boolean {
 }
 
 export default {
-	async fetch(request: Request, env: Env): Promise<Response> {
+	async fetch(request: Request, env: Env, ctx: ExecutionContext): Promise<Response> {
+		const startedAt = Date.now();
 		const url = new URL(request.url);
 		if (isInsecure(request, url)) {
 			url.protocol = "https:";
@@ -130,6 +135,7 @@ export default {
 		out.headers.set("Strict-Transport-Security", "max-age=31536000");
 		out.headers.set("X-Content-Type-Options", "nosniff");
 		out.headers.set("Referrer-Policy", "strict-origin-when-cross-origin");
+		sendHit("live-translate", request, out, env, ctx, startedAt);
 		return out;
 	},
 } satisfies ExportedHandler<Env>;

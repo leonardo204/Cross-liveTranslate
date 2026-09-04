@@ -367,33 +367,101 @@ html.os-mac .btn-dl.win:hover,html.os-win .btn-dl.mac:hover{background:#F1F5FA}
 .dl-sub{margin-top:8px;font-size:13px}
 .dl-sub a{color:var(--muted);font-weight:600}
 
-/* 동작 화면 */
+/* 동작 화면 — 실제 사용 모습을 가상으로 그린 화면(화상회의 위에 자막이 떠 있는 상태) */
 .demo{padding-top:0}
-.demo-frame{max-width:720px;margin:0 auto;background:#0E1116;border-radius:var(--radius);
-  box-shadow:var(--shadow-lg);overflow:hidden;border:1px solid #1C2029}
-.demo-bar{display:flex;align-items:center;gap:6px;padding:11px 14px;background:#161A21;border-bottom:1px solid #232833}
-.demo-bar i{width:10px;height:10px;border-radius:50%;background:#39404D;display:block}
-.demo-bar span{margin-left:8px;font-size:12px;color:#727B8A;font-family:var(--mono)}
-.demo-screen{height:132px;overflow:hidden;display:flex;align-items:flex-end;padding:0 22px 18px;
-  background:radial-gradient(120% 90% at 50% 100%,#161B24 0%,#0E1116 70%)}
+.demo-frame{position:relative;max-width:760px;margin:0 auto;aspect-ratio:16/9;
+  border-radius:var(--radius);overflow:hidden;background:#0A0E14;
+  box-shadow:var(--shadow-lg);border:1px solid rgba(255,255,255,.07)}
+
+/* 배경 장면: 조명이 은은하게 깔린 회의 화면을 그라데이션으로 표현 */
+.scene{position:absolute;inset:0;
+  background:
+    radial-gradient(70% 55% at 50% 22%,rgba(90,130,190,.30) 0%,transparent 62%),
+    radial-gradient(50% 45% at 12% 82%,rgba(60,95,150,.22) 0%,transparent 70%),
+    linear-gradient(165deg,#1A2740 0%,#121C2B 52%,#0A0E14 100%)}
+.scene::after{content:"";position:absolute;inset:0;
+  background:linear-gradient(180deg,transparent 42%,rgba(0,0,0,.55) 100%)}
+
+/* 말하는 사람 실루엣(초점이 나간 영상처럼 살짝 흐리게) */
+.figure{position:absolute;left:50%;bottom:0;transform:translateX(-50%);
+  width:31%;max-width:205px;height:66%;filter:blur(1.1px)}
+.figure .head{position:absolute;left:50%;top:0;transform:translateX(-50%);
+  width:45%;aspect-ratio:1;border-radius:50%;
+  background:linear-gradient(155deg,#6E86A8 0%,#4A5F7E 55%,#33445E 100%)}
+.figure .body{position:absolute;left:50%;top:30%;bottom:0;transform:translateX(-50%);
+  width:100%;border-radius:50% 50% 0 0;
+  background:linear-gradient(160deg,#5B7397 0%,#3C4F6C 45%,#26344A 100%)}
+
+/* 작은 내 화면 */
+.selfview{position:absolute;right:14px;top:14px;width:17%;max-width:112px;aspect-ratio:16/10;
+  border-radius:9px;overflow:hidden;background:linear-gradient(170deg,#27374F,#141D2B);
+  border:1px solid rgba(255,255,255,.10)}
+.selfview .head{position:absolute;left:50%;top:22%;transform:translateX(-50%);
+  width:26%;aspect-ratio:1;border-radius:50%;background:rgba(255,255,255,.22)}
+.selfview .body{position:absolute;left:50%;bottom:0;transform:translateX(-50%);
+  width:64%;height:40%;border-radius:50% 50% 0 0;background:rgba(255,255,255,.16)}
+
+/* 번역 중임을 알리는 표시 */
+.livetag{position:absolute;left:14px;top:14px;display:inline-flex;align-items:center;gap:7px;
+  padding:6px 12px;border-radius:999px;font-size:12px;font-weight:700;color:#EAF1FC;
+  background:rgba(10,16,24,.55);border:1px solid rgba(255,255,255,.12);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.livetag em{width:7px;height:7px;border-radius:50%;background:#4ADE80;font-style:normal;
+  animation:pulse 2.2s ease-in-out infinite}
+@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.35;transform:scale(.82)}}
+
+/* 회의 앱 아래쪽 버튼 줄 */
+.callbar{position:absolute;left:50%;bottom:14px;transform:translateX(-50%);
+  display:flex;gap:9px;padding:8px 13px;border-radius:999px;
+  background:rgba(10,16,24,.5);border:1px solid rgba(255,255,255,.10);
+  backdrop-filter:blur(8px);-webkit-backdrop-filter:blur(8px)}
+.callbar i{width:21px;height:21px;border-radius:50%;background:rgba(255,255,255,.18);display:block}
+.callbar i.off{background:#E5484D;opacity:.85}
+
+/* 화면 위에 떠 있는 자막 */
+.sub-overlay{position:absolute;left:50%;bottom:72px;transform:translateX(-50%);
+  width:min(84%,590px);height:128px;overflow:hidden;
+  display:flex;align-items:flex-start;padding:10px 18px;
+  background:rgba(0,0,0,.44);border-radius:12px;
+  backdrop-filter:blur(3px);-webkit-backdrop-filter:blur(3px)}
 .demo-roll{width:100%;animation:roll 16s ease-in-out infinite}
 .demo-block{padding:4px 0 8px}
-.demo-tl{font-size:17px;font-weight:700;line-height:1.4;color:#fff;
-  text-shadow:0 1px 3px rgba(0,0,0,.9),0 0 8px rgba(0,0,0,.6)}
+.demo-tl{font-size:19px;font-weight:800;line-height:1.35;color:#fff;letter-spacing:-.2px;
+  text-shadow:0 1px 3px rgba(0,0,0,.95),0 0 10px rgba(0,0,0,.7)}
 .demo-block.alt .demo-tl{color:#FFD866}
-.demo-src{font-size:11.5px;color:#96A0AE;line-height:1.4;margin-top:2px}
+.demo-src{font-size:12px;color:#C3CCD8;line-height:1.4;margin-top:3px;
+  text-shadow:0 1px 3px rgba(0,0,0,.9)}
 @keyframes roll{
   0%{transform:translateY(0);opacity:0}
   3%{transform:translateY(0);opacity:1}
   28%{transform:translateY(0);opacity:1}
-  34%{transform:translateY(-56px)}
-  59%{transform:translateY(-56px)}
-  65%{transform:translateY(-112px)}
-  94%{transform:translateY(-112px);opacity:1}
-  99%{transform:translateY(-112px);opacity:0}
+  34%{transform:translateY(-58px)}
+  59%{transform:translateY(-58px)}
+  65%{transform:translateY(-116px)}
+  94%{transform:translateY(-116px);opacity:1}
+  99%{transform:translateY(-116px);opacity:0}
   100%{transform:translateY(0);opacity:0}
 }
-@media(prefers-reduced-motion:reduce){.demo-roll{animation:none;transform:translateY(-112px)}}
+@media(prefers-reduced-motion:reduce){.demo-roll{animation:none;transform:translateY(-116px)}}
+@media(max-width:640px){
+  .sub-overlay{bottom:56px;height:106px;width:90%;padding:8px 12px}
+  .demo-tl{font-size:14px}
+  .demo-src{font-size:10.5px}
+    @keyframes roll{
+    0%{transform:translateY(0);opacity:0}
+    3%{transform:translateY(0);opacity:1}
+    28%{transform:translateY(0);opacity:1}
+    34%{transform:translateY(-49px)}
+    59%{transform:translateY(-49px)}
+    65%{transform:translateY(-98px)}
+    94%{transform:translateY(-98px);opacity:1}
+    99%{transform:translateY(-98px);opacity:0}
+    100%{transform:translateY(0);opacity:0}
+  }
+  .livetag{font-size:10.5px;padding:5px 9px}
+  .callbar{bottom:10px;padding:6px 10px;gap:7px}
+  .callbar i{width:16px;height:16px}
+}
 .demo-cap{text-align:center;font-size:13px;color:var(--faint);margin-top:14px}
 
 /* 카드 그리드 */
@@ -535,9 +603,13 @@ function renderLanding(version: string): string {
 
   <section class="demo">
     <div class="wrap">
-      <div class="demo-frame">
-        <div class="demo-bar"><i></i><i></i><i></i><span>자막 오버레이</span></div>
-        <div class="demo-screen">
+      <div class="demo-frame" role="img"
+           aria-label="화상회의 화면 위에 번역 자막이 떠 있는 모습. 번역문 아래에 원문이 함께 표시되고, 말하는 사람이 바뀌면 자막 색이 바뀝니다.">
+        <div class="scene"></div>
+        <div class="figure"><span class="head"></span><span class="body"></span></div>
+        <div class="selfview"><span class="head"></span><span class="body"></span></div>
+        <div class="livetag"><em></em>실시간 번역 중 · 영어 → 한국어</div>
+        <div class="sub-overlay">
           <div class="demo-roll">
             <div class="demo-block">
               <div class="demo-tl">안녕하세요, 오늘 회의를 시작하겠습니다.</div>
@@ -557,8 +629,9 @@ function renderLanding(version: string): string {
             </div>
           </div>
         </div>
+        <div class="callbar"><i></i><i></i><i></i><i></i><i class="off"></i></div>
       </div>
-      <p class="demo-cap">말하는 사람이 바뀌면 색이 바뀌고, 번역문 아래에 원문이 함께 붙습니다.</p>
+      <p class="demo-cap">자막이 뜨는 모습을 그림으로 나타냈습니다. 말하는 사람이 바뀌면 색이 바뀌고, 번역문 아래에 원문이 함께 붙습니다.</p>
     </div>
   </section>
 

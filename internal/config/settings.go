@@ -156,6 +156,21 @@ type UpdateSettings struct {
 	AutoCheck bool `json:"autoCheck"` // 자동 주기 업데이트 확인(원본 기본 true).
 }
 
+// HUDSettings holds 제어 HUD 창의 표시 정책이다(원본 SettingsStore monitor.* 그룹 이식).
+//
+//	Visible           — 지금 제어 HUD를 화면에 띄워 둘지. 설정 창 토글 · 트레이 메뉴 ·
+//	                    창 닫기(X)가 모두 이 값을 바꾸고, 다음 실행에서 그대로 복원한다.
+//	AutoShowOnCapture — 번역을 시작할 때 HUD를 자동으로 띄울지.
+//	HideOnStop        — 번역을 정지할 때 HUD를 자동으로 숨길지.
+//
+// 뒤의 두 값은 원본에서 기본 on이었지만 실제 호출부가 없어 동작하지 않았다. 기본을 on으로
+// 두면 정지할 때마다 창이 사라져 지금 동작이 바뀌므로, 기본은 off로 두고 원하는 사용자만 켠다.
+type HUDSettings struct {
+	Visible           bool `json:"visible"`
+	AutoShowOnCapture bool `json:"autoShowOnCapture"`
+	HideOnStop        bool `json:"hideOnStop"`
+}
+
 // Settings is the full persisted user-settings model.
 // 모든 후속 웨이브 기능이 여기에 필드를 꽂는다.
 type Settings struct {
@@ -170,6 +185,7 @@ type Settings struct {
 	VAD       VADSettings       `json:"vad"`
 	Engine    EngineSettings    `json:"engine"`
 	Update    UpdateSettings    `json:"update"`
+	HUD       HUDSettings       `json:"hud"`
 }
 
 // DefaultSettings returns the deterministic first-run defaults.
@@ -243,6 +259,15 @@ func DefaultSettings() Settings {
 		},
 		Update: UpdateSettings{
 			AutoCheck: true, // 원본 SUEnableAutomaticChecks=true — 기본 자동 확인 on.
+		},
+		HUD: HUDSettings{
+			// 첫 실행은 제어 HUD를 띄운다. macOS 메뉴바 · Windows 트레이 어느 쪽이든
+			// 아이콘만으로는 앱이 켜졌는지 알기 어렵다.
+			Visible: true,
+			// 아래 둘은 기본 off — 원본에서도 실제로 동작하지 않던 정책이라, 기본을 켜면
+			// 정지할 때마다 창이 사라져 사용자가 예상하지 못한 변화가 생긴다.
+			AutoShowOnCapture: false,
+			HideOnStop:        false,
 		},
 	}
 }

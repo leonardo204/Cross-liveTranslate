@@ -349,6 +349,7 @@
           <div class="sectitle">입력</div>
           <div class="group">
             <div class="row"><span class="lbl">입력 소스</span><select id="selInput"></select></div>
+            <div class="row"><span class="cap">‘자동’은 컴퓨터에서 나는 소리를 먼저 잡습니다. macOS 14.4 이상과 Windows 10·11은 별도 장치 설치 없이 바로 잡히고, 그 방법이 없는 환경에서만 마이크로 내려갑니다.</span></div>
             <div class="row">
               <button class="btn" id="btnRefreshInput">장치 목록 새로고침</button>
               <span class="spacer"></span>
@@ -714,7 +715,7 @@
 
       async function populateInput() {
         const a = api();
-        const opts = [["auto","자동"], ["loopback","시스템 오디오 (직접 캡처)"]];
+        const opts = [["auto","자동 (시스템 오디오 우선)"], ["loopback","시스템 오디오 (직접 캡처)"]];
         let devs = [];
         try { devs = (a && await a.ListInputDevices()) || []; } catch (_) {}
         for (const d of devs) {
@@ -943,6 +944,11 @@
         $("lblDuckVol").textContent = Math.round(($("rngDuckVol").value)*100) + "%";
 
         // 제어 HUD / 녹화
+        const hud = S.hud || {};
+        $("tgHud").checked = hud.visible !== false;      // 키가 없으면 표시(기본값)
+        $("tgHudAuto").checked = !!hud.autoShowOnCapture;
+        $("tgHudHide").checked = !!hud.hideOnStop;
+        updateHudRows();
         setRecDir((S.recording && S.recording.directory) || "");
 
         // 비용
@@ -966,6 +972,14 @@
       }
 
       // =================== 배선 ===================
+      // 제어 HUD를 숨겨 두면 "시작 시 자동 표시"·"정지 시 숨김"은 의미가 없다.
+      // 원본 SettingsView도 마스터 토글이 꺼지면 아래 두 개를 비활성으로 둔다.
+      function updateHudRows() {
+        const on = $("tgHud").checked;
+        $("tgHudAuto").disabled = !on;
+        $("tgHudHide").disabled = !on;
+      }
+
       // 저장 폴더 표시 — 경로가 길면 뒤쪽이 잘리므로 전체 경로를 툴팁으로 함께 둔다.
       function setRecDir(path) {
         const el = $("recDir");
@@ -1075,7 +1089,30 @@
         $("tgDuck").addEventListener("change", () => { if (!S.audio) S.audio = {}; S.audio.duckEnabled = $("tgDuck").checked; commit(); });
         $("rngDuckVol").addEventListener("input", () => { if (!S.audio) S.audio = {}; S.audio.duckVolume = parseFloat($("rngDuckVol").value); $("lblDuckVol").textContent = Math.round(S.audio.duckVolume*100)+"%"; commit(); });
 
-        // 제어 HUD — 표시/자동표시/숨김/위치 리셋: 백엔드 필드 없음(UI 전용).
+        // 제어 HUD — settings.json 의 hud.* 에 저장하고, controller 가 changed 신호를 받아
+        // 창을 즉시 띄우거나 숨긴다(맥 메뉴바 · 윈도우 트레이 동일 동작).
+        $("tgHud").addEventListener("change", () => {
+          if (!S.hud) S.hud = {};
+          S.hud.visible = $("tgHud").checked;
+          updateHudRows();
+          commit();
+        });
+        $("tgHudAuto").addEventListener("change", () => {
+          if (!S.hud) S.hud = {};
+          S.hud.autoShowOnCapture = $("tgHudAuto").checked;
+          commit();
+        });
+        $("tgHudHide").addEventListener("change", () => {
+          if (!S.hud) S.hud = {};
+          S.hud.hideOnStop = $("tgHudHide").checked;
+          commit();
+        });
+        // 위치 리셋은 창을 만지는 일이라 설정 파일이 아니라 controller 로 신호를 보낸다.
+        $("btnHudReset").addEventListener("click", async () => {
+          const a = api();
+          if (a && a.ResetHUDPosition) { try { await a.ResetHUDPosition(); } catch (_) {} }
+        });
+
         // 폴더 선택은 백엔드 네이티브 창(ChooseRecordingDir)을 쓴다.
         // window.prompt 는 Wails(WKWebView)에서 창이 뜨지 않고 곧바로 null 이라 무반응이었다.
         $("btnChangeRec").addEventListener("click", async () => {
@@ -1191,6 +1228,8 @@
         // controller가 창을 띄운 직후/실행 상태가 바뀔 때마다 running:update를 보낸다.
         if (window.runtime && typeof window.runtime.EventsOn === "function") {
           window.runtime.EventsOn("running:update", (running) => applyRunningState(running));
+          // 창이 숨어 있는 동안 트레이/닫기로 바뀐 값을 화면에 다시 반영한다.
+          window.runtime.EventsOn("settings:reload", () => { loadAll(); });
         }
         applyRunningState(false); // 초기값: 정지 상태(controller 통지 전까지 활성).
         await loadAll();

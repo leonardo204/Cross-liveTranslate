@@ -94,6 +94,11 @@ func (s *SettingsAPI) sendControl(cmd string) {
 	_ = ipc.WriteControl(s.out, ipc.ControlMsg{Cmd: cmd})
 }
 
+// ResetHUDPosition asks the controller to move 제어 HUD back to its default spot
+// (주 화면 우상단). 설정 창의 "위치 리셋" 버튼이 호출한다. HUD 창은 controller 프로세스가
+// 소유하므로 여기서는 control 신호만 보낸다.
+func (s *SettingsAPI) ResetHUDPosition() { s.sendControl("hud-reset") }
+
 // SetTestSubtitle toggles the '테스트 자막 표시'(고정 미리보기) preview. 설정 파일에
 // 저장하지 않는 일시 상태이며(앱 재시작 시 off), controller에 test-subtitle-on/off control을
 // 보내 오버레이에 샘플 자막을 표시/해제하게 한다. 실제 표시 여부(번역 중이면 무시)는
@@ -313,6 +318,9 @@ func runSettingsControlLoop(ctx context.Context) {
 				wruntime.WindowUnminimise(ctx)
 				wruntime.WindowSetAlwaysOnTop(ctx, true)
 				wruntime.WindowSetAlwaysOnTop(ctx, false)
+				// 창이 숨어 있는 동안 트레이 메뉴나 닫기(X)로 제어 HUD 표시 상태가 바뀌었을
+				// 수 있다. 프론트가 settings.json을 다시 읽게 해 화면과 실제를 맞춘다.
+				wruntime.EventsEmit(ctx, "settings:reload")
 			case "hide":
 				wruntime.WindowHide(ctx)
 				// 보이는 창이 없어졌으니 Dock 아이콘도 내린다(상시 노출 방지).

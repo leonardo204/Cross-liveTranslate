@@ -41,6 +41,7 @@ import (
 	"sync/atomic"
 
 	"cross-livetranslate/internal/activation"
+	"cross-livetranslate/internal/config"
 	"cross-livetranslate/internal/hudpos"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/overlay"
@@ -91,17 +92,21 @@ func requestQuit(ctx context.Context) {
 
 // hudStartsHidden decides the initial control-HUD visibility.
 //
-//	darwin  → 항상 숨김(원본 HUDController.isVisible=false 그대로)
-//	그 외   → 항상 표시(시작 시 제어 HUD가 바로 보인다)
+//	트레이 없음 → 항상 표시(숨기면 다시 띄울 수단이 없다)
+//	그 외       → settings.json 의 hud.visible 복원(기본 true = 표시)
+//
+// macOS 메뉴바와 Windows 트레이는 이제 같은 개념이므로 두 운영체제가 같은 규칙을 쓴다.
+// 마지막 표시 상태를 복원해야 설정 창 토글 · 트레이 메뉴 · 창 닫기(X)가 다음 실행에서도
+// 일관되게 보인다.
 func hudStartsHidden() bool {
-	// darwin — 항상 숨김(원본 HUDController.isVisible=false 그대로. 메뉴바로 띄운다).
-	if runtime.GOOS == "darwin" {
-		return true
+	if !trayCapable {
+		return false
 	}
-	// windows/기타 — 항상 표시. 마지막 상태를 복원하지 않는 이유: 작업표시줄 아이콘이 없는
-	// 트레이 상주 앱이라, 숨긴 채로 시작하면 실행했는데 화면에 아무것도 안 나타난다(사용자가
-	// 앱이 안 켜졌다고 오인한다). 숨김은 사용자가 직접 닫았을 때만 일어나야 한다.
-	return false
+	s, err := config.Load()
+	if err != nil {
+		return false
+	}
+	return !s.HUD.Visible
 }
 
 // init forces Go's pure-Go DNS resolver instead of the macOS cgo resolver

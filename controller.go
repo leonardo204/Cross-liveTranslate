@@ -428,6 +428,10 @@ func (c *Controller) spawnSettings() {
 				c.queueTestSubtitle(true)
 			case "test-subtitle-off":
 				c.queueTestSubtitle(false)
+			case "hud-reset":
+				// 설정 창의 "위치 리셋" — 제어 HUD를 기본 위치(주 화면 우상단)로 되돌린다.
+				// 창을 만지는 작업이라 UI 스레드를 막지 않도록 goroutine으로 넘긴다.
+				go c.resetHUDPosition()
 			case "install-update":
 				// 설정 창의 '지금 설치' 위임 — controller(본체)에서 실행해야 앱 전체가
 				// 종료·교체·재실행된다. goroutine으로 실행(control 리더 비차단).
@@ -499,7 +503,15 @@ func (c *Controller) reloadSettings() {
 	sel := c.sel
 	audioCfg := c.settings.Audio
 	newAutoCheck := s.Update.AutoCheck
+	hudVisible := s.HUD.Visible
 	c.mu.Unlock()
+
+	// 설정 창의 "제어 HUD 표시" 토글을 즉시 반영한다. setHUDVisible이 창 표시·트레이 체크
+	// 표식·영속을 한 번에 맞추므로, 값이 그대로면 아무 일도 하지 않는다(중복 저장 없음).
+	// 트레이가 없으면 숨기지 않는다 — HUD는 frameless라 다시 띄울 수단이 사라진다.
+	if hudVisible || c.trayReady() {
+		c.setHUDVisible(hudVisible)
+	}
 
 	// 자동확인이 새로 켜졌으면(off→on) loop를 깨워 곧바로 한 번 확인한다(원본: 토글 on 시
 	// 스케줄 재개). 꺼졌을 때는 loop가 다음 wake에서 설정을 읽고 스스로 skip하므로 신호 불필요.
@@ -1032,6 +1044,17 @@ func (c *Controller) hideHUD() {
 // trayReady reports whether the tray is installed and can bring the HUD back.
 func (c *Controller) trayReady() bool { return c.trayOK.Load() }
 
+// resetHUDPosition moves the control HUD back to its default spot (주 화면 우상단).
+// 설정 창의 "위치 리셋" 버튼이 control("hud-reset")으로 호출한다. 숨겨져 있으면 먼저
+// 띄운다 — 보이지 않는 창을 옮기면 사용자는 아무 일도 일어나지 않은 것으로 본다.
+func (c *Controller) resetHUDPosition() {
+	if c.ctx == nil {
+		return
+	}
+	c.setHUDVisible(true)
+	positionHUDTopRight(c.ctx)
+}
+
 // setHUDVisible is the single place that changes control-HUD visibility.
 // 창 표시/숨김 · controller 상태 · 트레이 체크 표식 · settings.json 영속을 한 번에 맞춘다
 // (세 곳이 따로 갱신되면 반드시 어긋난다 — 실제로 그 버그가 있었다).
@@ -1045,6 +1068,8 @@ func (c *Controller) setHUDVisible(vis bool) bool {
 		return false
 	}
 	c.hudVisible = vis
+	c.settings.HUD.Visible = vis
+	snap := c.settings
 	c.mu.Unlock()
 
 	if vis {
@@ -1054,7 +1079,31 @@ func (c *Controller) setHUDVisible(vis bool) bool {
 		wruntime.WindowHide(c.ctx)
 	}
 	tray.SetHUDVisible(vis)
+	// 다음 실행이 마지막 표시 상태로 시작하도록 영속한다(main.go hudStartsHidden이 읽는다).
+	// 이 경로는 창 닫기(X) 가로채기를 통해 **메인 메시지 스레드**에서도 불리므로, 디스크
+	// 쓰기로 메시지 펌프를 붙잡지 않도록 비동기로 넘긴다(Save는 temp+rename 원자적 쓰기).
+	go c.saveSettings(snap)
 	return true
+}
+
+// applyHUDCapturePolicy applies 캡처 시작/정지에 따른 제어 HUD 자동 표시·숨김 정책
+// (원본 HUDController.applyCapturePolicy 이식). 두 설정 모두 기본 off라, 켠 사용자에게만
+// 동작한다. 숨김은 트레이가 있을 때만 한다 — 트레이가 없으면 다시 띄울 수단이 사라진다.
+func (c *Controller) applyHUDCapturePolicy(running bool) {
+	c.mu.Lock()
+	autoShow := c.settings.HUD.AutoShowOnCapture
+	hideOnStop := c.settings.HUD.HideOnStop
+	c.mu.Unlock()
+
+	if running {
+		if autoShow {
+			c.setHUDVisible(true)
+		}
+		return
+	}
+	if hideOnStop && c.trayReady() {
+		c.setHUDVisible(false)
+	}
 }
 
 // HideHUD hides the control HUD into the tray. 제어 HUD의 '닫기(X)' 버튼이 호출하는
@@ -1132,6 +1181,8 @@ func (c *Controller) Start() error {
 	}
 	// 재생/덕킹 정책 적용(재생 켜짐 + 실행 중일 때 player.Start + 게인보상 + 덕킹).
 	c.applyAudioPolicy(audioCfg, true)
+	// 제어 HUD 자동 표시 정책(설정 > 제어 HUD > "캡처 시작 시 자동 표시").
+	c.applyHUDCapturePolicy(true)
 	c.emitStatus()
 	return nil
 }
@@ -1152,6 +1203,8 @@ func (c *Controller) Stop() error {
 	c.applyAudioPolicy(audioCfg, false)
 	// 비용(A Wave3): 세션 종료 시 누적 비용을 영속화한다.
 	c.persistCumulative()
+	// 제어 HUD 자동 숨김 정책(설정 > 제어 HUD > "캡처 정지 시 숨김").
+	c.applyHUDCapturePolicy(false)
 	c.emitStatus()
 	return nil
 }

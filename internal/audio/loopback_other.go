@@ -10,8 +10,3 @@ package audio
 func newLoopbackSource() (Source, error) {
 	return nil, ErrLoopbackUnsupported
 }
-
-// platformAutoFallback: 루프백 후보가 없으면 기본 마이크로 폴백.
-func platformAutoFallback() (Source, error) {
-	return NewMalgoSource(), nil
-}

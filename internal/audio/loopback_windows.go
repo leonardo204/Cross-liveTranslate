@@ -17,9 +17,3 @@ import "github.com/gen2brain/malgo"
 func newLoopbackSource() (Source, error) {
 	return &MalgoSource{deviceType: malgo.Loopback}, nil
 }
-
-// platformAutoFallback: auto 선택에서 루프백 후보 장치가 없을 때, Windows는
-// 시스템 출력 루프백으로 수렴한다(원본 auto 규칙의 win 분기).
-func platformAutoFallback() (Source, error) {
-	return newLoopbackSource()
-}

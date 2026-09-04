@@ -31,10 +31,3 @@ func newLoopbackSource() (Source, error) {
 	// 3) 미지원 — 상위에서 사용자에게 표면화되도록 명시적 오류.
 	return nil, ErrLoopbackUnsupported
 }
-
-// platformAutoFallback: auto에서 루프백 후보(BlackHole 등)가 없고 mac 탭이 아직
-// 미구현이므로 기본 마이크로 폴백한다(원본 auto 규칙: 14.4 미만/탭 미가용 시 마이크).
-// 상위(호출부/headless)가 로그로 폴백을 알린다.
-func platformAutoFallback() (Source, error) {
-	return NewMalgoSource(), nil
-}

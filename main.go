@@ -268,6 +268,16 @@ func runController() {
 		Height:      hudHeight,
 		Frameless:   true,
 		AlwaysOnTop: true,
+		// 제어 HUD는 고정 크기다(원본 FloatingPanel 260×176). Windows에서는 창에 테두리
+		// 스타일(WS_THICKFRAME)이 남아 있어 가장자리를 끌면 크기가 바뀌었고, 그러면 내부
+		// 레이아웃이 깨진 채 그 크기가 그대로 남는다(제목 표시줄이 없어 되돌릴 수단도 없다).
+		// DisableResize=true 가 그 스타일과 프레임리스 리사이즈 핸들을 함께 끈다.
+		// 최소/최대 크기까지 같은 값으로 못 박아, 다른 경로로 크기가 바뀌어도 되돌아온다.
+		DisableResize: true,
+		MinWidth:      hudWidth,
+		MinHeight:     hudHeight,
+		MaxWidth:      hudWidth,
+		MaxHeight:     hudHeight,
 		// 원본 HUDController.isVisible=false — macOS는 시작 시 제어 HUD를 숨기고 트레이로
 		// 띄운다. 그러나 Windows는 트레이가 아직 stub(no-op)이라 숨기면 창을 띄울 수단이 없어
 		// 앱이 보이지 않게 실행된다. 따라서 트레이가 없는 플랫폼에서는 HUD를 처음부터 표시한다.

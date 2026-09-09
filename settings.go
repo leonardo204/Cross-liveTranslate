@@ -21,6 +21,7 @@ import (
 	"context"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -259,26 +260,86 @@ func (s *SettingsAPI) Models() []ModelInfo {
 	}
 }
 
+// DirPickResult 는 폴더 선택 창의 결과다. 프론트가 "취소"와 "열지 못함"을 구분해야
+// 하기 때문에 빈 문자열 하나로 뭉뚱그리지 않는다 — 예전에는 둘 다 ""였고, 실패해도
+// 버튼을 눌러도 아무 일이 없는 것처럼 보였다(실제 사용자가 4분간 69번 눌렀다).
+type DirPickResult struct {
+	Dir       string `json:"dir"`       // 선택한 절대경로(취소/실패면 빈 문자열).
+	Cancelled bool   `json:"cancelled"` // 사용자가 창을 닫았다 — 조용히 끝내면 된다.
+	Error     string `json:"error"`     // 창을 열지 못한 이유(사용자에게 보여줄 문장).
+}
+
+// existingAncestor 는 dir 에서 위로 거슬러 올라가며 **실제로 있는** 폴더를 찾는다.
+//
+// # 왜 필요한가
+//
+// Wails 의 OpenDirectoryDialog 는 시작 위치로 준 폴더가 없으면 창을 아예 띄우지 않고
+// 오류를 돌려준다(pkg/runtime/dialog.go 의 DirExists 검사). 저장해 둔 녹화 폴더가
+// 지워지거나 옮겨졌다면(OneDrive 경로에서 실제로 관측됨) 버튼이 영영 먹통이 된다.
+// 그래서 있는 상위 폴더를 찾아 그곳에서 창을 연다. 끝까지 없으면 빈 문자열을 돌려주고,
+// 호출부가 시작 위치 없이 창을 연다 — **어떤 경우에도 창은 뜬다.**
+func existingAncestor(dir string) string {
+	dir = strings.TrimSpace(dir)
+	for i := 0; dir != "" && i < 64; i++ { // i: 심볼릭 링크 등으로 인한 무한 루프 방어.
+		if info, err := os.Stat(dir); err == nil && info.IsDir() {
+			return dir
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir { // 루트("/" · "D:\\")까지 올라왔다.
+			return ""
+		}
+		dir = parent
+	}
+	return ""
+}
+
 // ChooseRecordingDir opens the native folder picker for the 자막 녹화 저장 폴더
-// (원본 SettingsWindow의 NSOpenPanel 등가). 선택한 절대경로를 반환하고, 취소했거나
-// 열지 못하면 빈 문자열을 반환한다.
+// (원본 SettingsWindow의 NSOpenPanel 등가).
 //
 // 프론트가 쓰던 window.prompt는 Wails(WKWebView)가 패널을 구현하지 않아 창이 뜨지 않고
 // 곧바로 null을 돌려준다 — 버튼을 눌러도 아무 일도 일어나지 않던 원인이라 이 바인딩으로 대체한다.
-func (s *SettingsAPI) ChooseRecordingDir(current string) string {
+//
+// 시작 위치는 현재 저장된 폴더 → 없으면 그 상위 폴더 → 그것도 없으면 문서 폴더 순으로
+// 고른다. 마지막까지 없으면 시작 위치를 비워 OS 기본 위치에서 연다.
+func (s *SettingsAPI) ChooseRecordingDir(current string) DirPickResult {
 	if s.ctx == nil {
-		return ""
+		return DirPickResult{Error: "설정 창이 아직 준비되지 않았습니다 — 잠시 뒤 다시 눌러 주세요"}
 	}
+
+	start := existingAncestor(current)
+	if start == "" {
+		if home, err := os.UserHomeDir(); err == nil {
+			start = existingAncestor(filepath.Join(home, "Documents"))
+		}
+	}
+	if start != current {
+		log.Printf("[settings] 폴더 선택 시작 위치를 %q 대신 %q 로 연다(원래 경로가 없다)", current, start)
+	}
+
 	dir, err := wruntime.OpenDirectoryDialog(s.ctx, wruntime.OpenDialogOptions{
 		Title:                "자막 녹화 저장 폴더 선택",
-		DefaultDirectory:     current,
+		DefaultDirectory:     start,
 		CanCreateDirectories: true,
 	})
 	if err != nil {
 		log.Println("[settings] 폴더 선택 실패:", err)
-		return ""
+		return DirPickResult{Error: "폴더 선택 창을 열지 못했습니다 — 다시 시도해 주세요"}
 	}
-	return dir
+	if strings.TrimSpace(dir) == "" {
+		return DirPickResult{Cancelled: true} // 사용자가 창을 닫았다.
+	}
+	return DirPickResult{Dir: dir}
+}
+
+// DirExists reports whether path is an existing directory. 설정 창이 저장된 녹화 폴더가
+// 아직 있는지 확인해 "폴더 없음"을 알리는 데 쓴다(없으면 녹화 시작 시 자동으로 만든다).
+func (s *SettingsAPI) DirExists(path string) bool {
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return false
+	}
+	info, err := os.Stat(path)
+	return err == nil && info.IsDir()
 }
 
 // PermissionStatus returns OS permission states (원본 PermissionHelper 실이식).

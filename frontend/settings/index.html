@@ -545,7 +545,8 @@
           <div class="sectitle">자막 녹화</div>
           <div class="group">
             <div class="row"><span class="lbl">저장 폴더</span><span class="val" id="recDir" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:340px"></span></div>
-            <div class="row"><button class="btn" id="btnChangeRec">변경…</button></div>
+            <div class="row"><button class="btn" id="btnChangeRec">변경…</button>
+              <span class="spacer"></span><span class="sec" id="recDirMsg"></span></div>
             <div class="row"><span class="cap">제어 HUD의 ‘녹화’ 토글을 켜면 이 폴더에 확정된 자막이 [시각] 원문 → 번역문 형식으로 저장됩니다. 켜 둔 채 앱을 끄면 다음 실행에서도 켜진 상태로 시작합니다(자막이 나올 때 파일이 만들어집니다).</span></div>
           </div>
         </div>
@@ -1132,7 +1133,7 @@
         $("tgHudAuto").checked = !!hud.autoShowOnCapture;
         $("tgHudHide").checked = !!hud.hideOnStop;
         updateHudRows();
-        setRecDir((S.recording && S.recording.directory) || "");
+        await setRecDir((S.recording && S.recording.directory) || "");
 
         // 비용
         $("tgCostHud").checked = !!(S.cost && S.cost.hudEnabled);
@@ -1167,10 +1168,22 @@
       }
 
       // 저장 폴더 표시 — 경로가 길면 뒤쪽이 잘리므로 전체 경로를 툴팁으로 함께 둔다.
-      function setRecDir(path) {
+      // 저장 폴더 표시. 경로가 길면 뒤쪽이 잘리므로 전체 경로를 툴팁으로 함께 둔다.
+      // 폴더가 지금 없으면(옮겼거나 지웠거나 OneDrive 동기화가 풀린 경우) 그 사실을 알린다 —
+      // 녹화는 시작할 때 폴더를 만들지만, 모르고 있으면 설정이 잘못된 줄 안다.
+      async function setRecDir(path) {
         const el = $("recDir");
         el.textContent = path;
         el.title = path;
+
+        const note = $("recDirMsg");
+        if (!note) return;
+        if (!path) { note.textContent = ""; return; }
+        const a = api();
+        if (!a || !a.DirExists) { note.textContent = ""; return; }
+        let exists = true;
+        try { exists = await a.DirExists(path); } catch (_) { exists = true; }
+        note.textContent = exists ? "" : "지금 이 폴더는 없습니다 — 녹화를 시작할 때 만들어집니다.";
       }
 
       function wire() {
@@ -1344,17 +1357,28 @@
 
         // 폴더 선택은 백엔드 네이티브 창(ChooseRecordingDir)을 쓴다.
         // window.prompt 는 Wails(WKWebView)에서 창이 뜨지 않고 곧바로 null 이라 무반응이었다.
+        // 폴더 선택: 취소와 "창을 열지 못함"을 구분해 알린다. 예전에는 둘 다 조용히 끝나
+        // 버튼이 먹통인 것처럼 보였다(저장된 폴더가 사라지면 창이 아예 안 떴다).
         $("btnChangeRec").addEventListener("click", async () => {
           const a = api();
+          const note = $("recDirMsg");
           const cur = (S.recording && S.recording.directory) || "";
-          let v = "";
-          if (a && a.ChooseRecordingDir) {
-            try { v = await a.ChooseRecordingDir(cur); } catch (_) { v = ""; }
+          if (!a || !a.ChooseRecordingDir) {
+            if (note) note.textContent = "폴더 선택 창을 열지 못했습니다 — 앱을 다시 시작해 주세요.";
+            return;
           }
-          if (!v) return; // 취소했거나 열지 못했다 — 기존 값을 유지한다.
+          if (note) note.textContent = "";
+          let r = null;
+          try { r = await a.ChooseRecordingDir(cur); } catch (e) { r = null; }
+          if (!r) {
+            if (note) note.textContent = "폴더 선택 창을 열지 못했습니다 — 다시 시도해 주세요.";
+            return;
+          }
+          if (r.error) { if (note) note.textContent = r.error + "."; return; }
+          if (r.cancelled || !r.dir) return; // 사용자가 창을 닫았다 — 기존 값을 유지한다.
           if (!S.recording) S.recording = {};
-          S.recording.directory = v;
-          setRecDir(v);
+          S.recording.directory = r.dir;
+          await setRecDir(r.dir);
           commit();
         });
 

@@ -361,7 +361,14 @@
 
       // 버튼 액션(바인딩) — Controller.d.ts 확인: ToggleCapture/ToggleRecording/ShowSettings.
       function bindActions() {
-        $("toggle").addEventListener("click", function () { var c = ctrl(); if (c) c.ToggleCapture(); });
+        // 시작이 거부되면(API 키 없음·마이크 권한 없음) 백엔드가 오류를 돌려준다. 사용자에게는
+        // 화면 위 알림 자막으로 이미 알렸고, 버튼 상태는 곧 오는 hud:update 가 되돌린다.
+        // 여기서는 처리되지 않은 거부만 삼킨다.
+        $("toggle").addEventListener("click", function () {
+          var c = ctrl(); if (!c) return;
+          var p = c.ToggleCapture();
+          if (p && typeof p.catch === "function") p.catch(function () {});
+        });
         $("rec").addEventListener("click", function () { var c = ctrl(); if (c) c.ToggleRecording(); });
         $("gear").addEventListener("click", function () { var c = ctrl(); if (c) c.ShowSettings(); });
 

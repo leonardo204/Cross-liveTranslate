@@ -69,6 +69,14 @@ var ErrNoDeviceID = errors.New("audio: SelectDevice requires a non-empty DeviceI
 // 이 에러를 인지해 HUD에 "시스템 오디오 권한 필요"를 명확히 표면화한다(무한 오류 대신).
 var ErrSystemTapPermission = errors.New("audio: 시스템 오디오 캡처 권한이 필요합니다 — 설정에서 허용하세요")
 
+// ErrSystemTapUnavailable is returned by SystemTapSource.Start when the OS does
+// not support Core Audio Process Tap (macOS 14.4 미만). 호출부(newLoopbackSource)는
+// 이 경우 가상 루프백 장치로 폴백한다.
+//
+// 선언이 darwin 전용 파일이 아니라 여기 있는 이유: controller 가 errors.Is 로 이 값을
+// 분기해 사용자에게 보일 문구를 고르는데, 그 코드는 모든 플랫폼에서 컴파일된다.
+var ErrSystemTapUnavailable = errors.New("audio: system tap requires macOS 14.4+")
+
 // looksLikeLoopback estimates whether a device name denotes a virtual loopback
 // input (BlackHole/Loopback/Soundflower, or an aggregate+virtual pairing).
 // 원본 이식: AudioDevice.swift `isLikelyLoopback`.

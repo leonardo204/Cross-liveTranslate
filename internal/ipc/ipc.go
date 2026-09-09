@@ -37,12 +37,17 @@ const (
 //	           렌더러가 각 번역 줄 바로 아래에 "번역문 → 원문" 순서로 덧붙인다. 해당 줄에
 //	           대응하는 원문이 없으면 그 자리는 빈 문자열이다.
 //	Source   — 진행 중 원문(구버전 오버레이 하위호환 — Sources의 마지막 비어있지 않은 값).
-//	Visible  — 자막을 화면에 보여야 하는지(false면 오버레이 숨김).
+//	Notice   — 사용자에게 알릴 한 줄(API 키 없음·권한 거부·연결 실패 등). 비어 있으면 표시하지
+//	           않는다. 번역문과 **다른 색·작은 글씨**로 자막 줄 위에 그려 번역 결과로 오해하지
+//	           않게 한다. 자막 녹화 파일에는 들어가지 않는다(엔진을 거치지 않는 별도 통로).
+//	Visible  — 자막을 화면에 보여야 하는지(false면 오버레이 숨김). Notice가 있으면 자막 줄이
+//	           하나도 없어도 오버레이는 보여야 한다.
 type SubtitleMsg struct {
 	Lines    []string `json:"lines"`
 	Speakers []int    `json:"speakers,omitempty"`
 	Sources  []string `json:"sources,omitempty"`
 	Source   string   `json:"source,omitempty"`
+	Notice   string   `json:"notice,omitempty"`
 	Visible  bool     `json:"visible"`
 }
 

@@ -19,17 +19,11 @@ import "C"
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"unsafe"
 )
-
-// ErrSystemTapUnavailable is returned by SystemTapSource.Start when the OS does
-// not support Core Audio Process Tap (macOS 14.4 미만). 호출부(newLoopbackSource)는
-// 이 경우 가상 루프백 장치로 폴백한다.
-var ErrSystemTapUnavailable = errors.New("audio: system tap requires macOS 14.4+")
 
 // 프로세스당 tap 1개 — 현재 활성 소스와 그 전달 채널을 전역으로 등록한다.
 // export 콜백(lt_systemtap_on_chunk)이 이 채널로 청크를 넘긴다.

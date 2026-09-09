@@ -165,6 +165,12 @@ type Controller struct {
 	// (stdin 단일 writer 불변식 유지 → 레이스 없음). 버퍼로 non-blocking push.
 	styleCh chan ipc.StyleMsg
 
+	// noticeCh carries 사용자 알림 문구를 runLoop로 전달한다(빈 문자열이면 지우기).
+	// 오버레이 stdin 은 runLoop 단독 writer 여야 하므로 여기서도 채널을 거친다.
+	// 알림은 자막 엔진을 거치지 않는다 — 번역문과 섞이면 녹화 파일이 오염되고,
+	// '테스트 자막 표시' 미리보기와 서로 덮어쓴다.
+	noticeCh chan string
+
 	// testCh carries '테스트 자막 표시' 토글 요청(true=on/false=off)을 runLoop로 전달한다.
 	// 미리보기 자막은 자막엔진(runLoop 단독 소유)을 통해 표시되므로, overlay stdin 단일
 	// writer 불변식을 유지하기 위해 반드시 runLoop에서만 엔진을 만진다.
@@ -184,6 +190,7 @@ func newController() *Controller {
 		events:   make(chan pipeline.Event, 256),
 		styleCh:  make(chan ipc.StyleMsg, 8),
 		testCh:   make(chan bool, 4),
+		noticeCh: make(chan string, 4),
 		settings: config.DefaultSettings(),
 		// 실제 초기값은 runController가 hudStartsHidden()으로 정해 덮어쓴다(창의 StartHidden과
 		// 반드시 일치해야 트레이 체크 표식/첫 토글이 헛돌지 않는다).
@@ -594,6 +601,10 @@ func (c *Controller) runLoop() {
 	defer ticker.Stop()
 
 	var lastSig string
+	// 사용자 알림 한 줄과 그 만료 시각. runLoop 단독 소유라 락이 필요 없다.
+	// notice 가 비면 표시하지 않고, noticeUntil 이 지나면 tick 에서 스스로 지운다.
+	var notice string
+	var noticeUntil time.Time
 	// 재생 진단(A3): 약 5초마다 player Stats를 로깅해 OutputAudio가 실제로 링버퍼로
 	// 흐르는지(EnqueuedBytes 증가), 백프레셔/ dedup 드롭이 있는지 검증 가능하게 한다.
 	var statsTick int
@@ -610,6 +621,12 @@ func (c *Controller) runLoop() {
 	}
 	maybePush := func() {
 		msg := buildSubtitleMsg(eng, c.wantSource(), c.wantSpeakerAlternate())
+		// 알림은 자막 엔진 바깥에서 얹는다 — 엔진을 거치면 녹화 파일에 섞이고
+		// 미리보기 상태를 덮어쓴다. 자막 줄이 없어도 알림만으로 오버레이를 보인다.
+		if notice != "" {
+			msg.Notice = notice
+			msg.Visible = true
+		}
 		sig := subtitleSignature(msg)
 		if sig == lastSig {
 			return
@@ -624,8 +641,9 @@ func (c *Controller) runLoop() {
 		// 진단: 실제로 push되는 스냅샷만 기록한다(서명이 바뀐 경우 = 표시가 달라진 경우).
 		// Join/truncate 비용을 피하려고 로깅이 살아 있을 때만 조립한다.
 		if txlog.Enabled() {
-			txlog.Logf("subtitle.push", "visible=%v lines=%d speakers=%v text=%q",
-				msg.Visible, len(msg.Lines), msg.Speakers, truncRunes(strings.Join(msg.Lines, " | "), 200))
+			txlog.Logf("subtitle.push", "visible=%v lines=%d speakers=%v notice=%q text=%q",
+				msg.Visible, len(msg.Lines), msg.Speakers, msg.Notice,
+				truncRunes(strings.Join(msg.Lines, " | "), 200))
 		}
 		c.pushSubtitle(msg)
 	}
@@ -640,6 +658,10 @@ func (c *Controller) runLoop() {
 			eng.TurnBoundarySilence = c.turnBoundarySilence()
 			eng.QuestionBoundary = c.wantQuestionBoundary()
 			eng.Heartbeat(now)
+			// 알림 만료 — 시간이 지나면 스스로 사라진다(사용자가 지울 수단이 없으므로).
+			if notice != "" && now.After(noticeUntil) {
+				notice = ""
+			}
 			maybePush()
 			c.accountInputCost(now)
 			c.emitHUD() // 제어 HUD 실시간 상태(레벨/발화/상태) 주기 갱신.
@@ -656,6 +678,14 @@ func (c *Controller) runLoop() {
 			if c.applyTestSubtitle(eng, on) {
 				maybePush()
 			}
+		case text := <-c.noticeCh:
+			// 같은 문구가 다시 오면 만료 시각만 늘어난다(다시 시작을 눌렀을 때 재노출).
+			notice = text
+			if text != "" {
+				noticeUntil = time.Now().Add(noticeTTL)
+				txlog.Logf("notice", "%s", text)
+			}
+			maybePush()
 		}
 	}
 }
@@ -689,6 +719,30 @@ const (
 	testSubtitleTranslation = "안녕하세요 — 자막 미리보기입니다"
 	testSubtitleSource      = "Hello — subtitle preview"
 )
+
+// 사용자 알림 문구(오버레이 자막 위에 한 줄). 조용히 실패하던 지점들을 화면으로 끌어올린다 —
+// 제어 HUD 하단 작은 글씨는 트레이 상주 상태(HUD 숨김)에서는 보이지 않기 때문이다.
+const (
+	noticeNoAPIKey   = "Gemini API 키가 없습니다 — 설정 창에서 키를 입력하세요"
+	noticeMicDenied  = "마이크 권한이 없습니다 — 시스템 설정에서 허용한 뒤 다시 시작하세요"
+	noticeSysAudio   = "시스템 오디오 권한이 없습니다 — 시스템 설정에서 허용한 뒤 다시 시작하세요"
+	noticeLoopbackNo = "시스템 소리를 잡을 수 없습니다 — 입력을 마이크로 바꾸거나 macOS 14.4 이상이 필요합니다"
+	noticeConnFailed = "번역 연결에 실패했습니다 — 잠시 뒤 다시 시작해 보세요"
+	noticeNoDevice   = "선택한 입력 장치를 찾을 수 없습니다 — 설정에서 입력을 다시 고르세요"
+)
+
+// noticeTTL 은 알림 한 줄이 화면에 남는 시간이다. 자막을 오래 가리지 않으면서도 눈에 들어올
+// 만큼으로 잡았다. 같은 알림이 다시 발행되면 시간이 처음부터 다시 시작된다.
+const noticeTTL = 8 * time.Second
+
+// notify 는 사용자 알림 문구를 runLoop 로 넘긴다(non-blocking). 빈 문자열이면 지운다.
+// 어느 goroutine 에서나 호출할 수 있다 — 실제 오버레이 push 는 runLoop 단독이다.
+func (c *Controller) notify(text string) {
+	select {
+	case c.noticeCh <- text:
+	default: // 채널이 가득 차면(드묾) 다음 알림이 곧 덮어쓰므로 드롭 허용.
+	}
+}
 
 // queueTestSubtitle hands a '테스트 자막 표시' 토글 요청을 runLoop로 넘긴다(non-blocking).
 // 실제 엔진 조작/오버레이 push는 runLoop 단독(applyTestSubtitle)에서 일어난다.
@@ -820,13 +874,22 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 		// 이 에러가 버려져 "연결 중…"의 원인을 추적할 수 없었다.
 		log.Printf("[controller] gemini 영구 실패: %v", ev.Err)
 		// 시스템 오디오 캡처 권한 실패는 HUD에 명확한 안내를 띄운다(무의미한 "오류" 대신).
+		// 상태 글씨는 제어 HUD를 열어 둔 사람만 본다. 트레이 상주가 기본이라 화면 위
+		// 알림 한 줄로도 함께 알린다(무엇이 잘못됐고 무엇을 하면 되는지).
 		switch {
 		case errors.Is(ev.Err, audio.ErrSystemTapPermission):
 			c.setStatus("system-audio-permission")
-		case errors.Is(ev.Err, audio.ErrLoopbackUnsupported):
+			c.notify(noticeSysAudio)
+		case errors.Is(ev.Err, audio.ErrLoopbackUnsupported),
+			errors.Is(ev.Err, audio.ErrSystemTapUnavailable):
 			c.setStatus("loopback-unsupported")
+			c.notify(noticeLoopbackNo)
+		case errors.Is(ev.Err, audio.ErrNoDeviceID):
+			c.setStatus("failed")
+			c.notify(noticeNoDevice)
 		default:
 			c.setStatus("failed")
+			c.notify(noticeConnFailed)
 		}
 		c.mu.Lock()
 		c.running = false
@@ -1246,11 +1309,18 @@ func (c *Controller) HUDCloseAvailable() bool { return c.trayReady() }
 
 // Start begins translation with the current target/source/input selection.
 func (c *Controller) Start() error {
+	// 지난 시도에서 남은 알림을 먼저 지운다 — 새로 뜨는 알림이 이번 결과를 가리키게 한다.
+	c.notify("")
+
 	c.mu.Lock()
 	if c.apiKeyErr != nil {
 		err := c.apiKeyErr
 		c.status = "no API key"
 		c.mu.Unlock()
+		// 키 없이 '시작'을 누르면 지금까지 아무 반응이 없었다(제어 HUD 프론트가 반환값을
+		// 버린다). 화면 위 알림으로 무엇이 없는지 알린다.
+		c.notify(noticeNoAPIKey)
+		c.emitStatus()
 		return err
 	}
 	sel := c.sel
@@ -1278,9 +1348,17 @@ func (c *Controller) Start() error {
 			permission.RequestMicrophone()
 		case permission.MicDenied, permission.MicRestricted:
 			log.Println("[controller] 마이크 권한 필요 — 시스템 설정 > 개인정보 보호 및 보안 > 마이크에서 허용하세요")
+			// 시작을 여기서 중단하고 정지 상태로 되돌린다. 예전에는 그대로 진행해서
+			// 무음만 흘러 "연결 중…"에 영원히 머물렀다(권한 없이 캡처하면 miniaudio가
+			// 무음을 준다). 아직 SetDesired 전이라 되돌릴 것은 running 플래그뿐이다.
 			c.mu.Lock()
+			c.running = false
 			c.status = "mic-permission"
 			c.mu.Unlock()
+			c.notify(noticeMicDenied)
+			c.notifySettingsRunning(false)
+			c.emitStatus()
+			return errors.New("마이크 권한이 없습니다 — 시스템 설정에서 허용하세요")
 		}
 	}
 
@@ -1305,6 +1383,10 @@ func (c *Controller) Start() error {
 
 // Stop halts translation but keeps the process/overlay alive.
 func (c *Controller) Stop() error {
+	// 사용자가 직접 멈췄으니 화면에 남은 알림도 함께 지운다(영구 실패 경로는 Stop을
+	// 거치지 않으므로 그때의 알림은 제 수명대로 남는다).
+	c.notify("")
+
 	c.mu.Lock()
 	c.running = false
 	c.status = "stopped"
@@ -2034,6 +2116,9 @@ func subtitleSignature(m ipc.SubtitleMsg) string {
 	}
 	b.WriteByte('|')
 	b.WriteString(m.Source)
+	b.WriteByte('|')
+	// 알림 문구가 바뀌면 텍스트가 그대로여도 다시 push 해야 한다.
+	b.WriteString(m.Notice)
 	b.WriteByte('|')
 	for i, l := range m.Lines {
 		// 화자 패리티도 서명에 포함한다 — 텍스트가 그대로여도 색이 바뀌면 push 해야 한다.

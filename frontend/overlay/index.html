@@ -81,6 +81,23 @@
     .line.source {
       opacity: 0.85;
     }
+
+    /*
+      알림 줄 — API 키 없음·권한 거부·연결 실패처럼 사용자가 조치해야 하는 상황을 알린다.
+      번역문(흰색·큰 글씨)과 헷갈리지 않도록 주황색 작은 글씨로 그리고 왼쪽에 세로 막대를
+      둔다. 자막 글꼴/색 설정의 영향을 받지 않는다(설정 때문에 안 보이면 안 되므로).
+    */
+    .line.notice {
+      color: #ffc061;
+      font-weight: 600;
+      border-left: 3px solid #ffc061;
+      padding-left: 10px;
+      -webkit-text-stroke: 0;
+      text-shadow:
+        0 0 4px rgba(0, 0, 0, 0.95),
+        1px 1px 2px rgba(0, 0, 0, 0.95);
+      opacity: 0.97;
+    }
   </style>
 </head>
 <body>
@@ -90,7 +107,8 @@
 
   <script>
     // Overlay renderer. Two Wails events drive it:
-    //   "subtitle:update" { lines: string[], visible: bool, sources?: string[], source?: string }
+    //   "subtitle:update" { lines: string[], visible: bool, sources?: string[], source?: string,
+    //                        notice?: string }
     //   "style:update"    { fontFamily, fontSize, fontWeight, textColor,
     //                        strokeEnabled, strokeColor, strokeWidth,
     //                        glowEnabled, glowColor, glowRadius,
@@ -124,7 +142,7 @@
         vertical: "bottom",
         offset: 0.5,
       };
-      let lastSubtitle = { lines: [], speakers: [], sources: null, visible: false, source: "" };
+      let lastSubtitle = { lines: [], speakers: [], sources: null, visible: false, source: "", notice: "" };
 
       // Weight name → CSS numeric (원본 SubtitleFontWeight 매핑).
       const WEIGHTS = {
@@ -257,6 +275,21 @@
         const legacySource = typeof p.source === "string" ? p.source : "";
 
         box.textContent = "";
+
+        // 알림은 자막 줄 **위**에 한 줄로 놓는다. 자막 글꼴 크기에는 따라가되(너무
+        // 작거나 크지 않게) 색·굵기는 고정이라 번역문과 구분된다.
+        const notice = typeof p.notice === "string" ? p.notice : "";
+        if (notice) {
+          const nel = document.createElement("div");
+          nel.className = "line notice";
+          nel.textContent = notice;
+          nel.style.fontFamily = style.fontFamily
+            ? '"' + style.fontFamily + '", ' + SYSTEM_FONT
+            : SYSTEM_FONT;
+          nel.style.fontSize = Math.max(13, style.fontSize * 0.55) + "px";
+          box.appendChild(nel);
+        }
+
         let drewSource = false;
         for (let i = 0; i < lines.length; i++) {
           const el = document.createElement("div");
@@ -286,7 +319,7 @@
 
         box.classList.toggle(
           "hidden",
-          !visible || (lines.length === 0 && !drewSource)
+          !visible || (lines.length === 0 && !drewSource && !notice)
         );
 
         // 텍스트/줄수가 바뀌면 박스 높이가 달라지므로 세로 위치를 다시 계산한다
@@ -301,6 +334,7 @@
           sources: payload && Array.isArray(payload.sources) ? payload.sources : null,
           visible: !payload || payload.visible !== false,
           source: payload && typeof payload.source === "string" ? payload.source : "",
+          notice: payload && typeof payload.notice === "string" ? payload.notice : "",
         };
         render();
       }

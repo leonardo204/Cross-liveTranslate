@@ -66,7 +66,7 @@ type SubtitleSettings struct {
 	BgColor       string  `json:"bgColor"`       // #RRGGBBAA(원본은 검정+opacity).
 	BgOpacity     float64 `json:"bgOpacity"`     // 0..1, 기본 0.35.
 	Align         string  `json:"align"`         // leading|center|trailing.
-	MaxLines      int     `json:"maxLines"`      // UI 1..4, 기본 2.
+	MaxLines      int     `json:"maxLines"`      // UI 1..4, 기본 3.
 
 	// SpeakerColorAlternate 는 화자 전환 근사(turnComplete/무음 2초) 2색 교대 표시의
 	// 숨은 스위치다(기본 true). 설정 UI에는 노출하지 않는다(원본 UI 100% 재현 원칙) —
@@ -114,43 +114,74 @@ type VADSettings struct {
 	Enabled bool `json:"enabled"` // 기본 false(미배선 — Wave 3에서 활성).
 }
 
-// 엔진 튜닝 기본값/마이그레이션 상수.
+// 자막을 끊는 기준의 기본값.
+//
+// # 값의 근거 (2026-09-09, 83분 화상회의 실측)
+//
+// 이전 기본값(오디오 400ms / 델타 갭 1000ms / 자막 2줄)은 3.5분짜리 짧은 테스트에서 정한
+// 값이라, 실제 회의에서는 자막을 지나치게 잘게 끊었다. 같은 로그를 분석한 결과다.
+//
+//   - 번역 델타가 도착하는 간격이 1.00~1.25초에 가장 많이 몰린다. 임계가 1000ms면 정상
+//     스트리밍 간격의 55%를 발화 경계로 오인한다(갭으로 끊긴 줄의 57%가 문장 중간이었다).
+//   - 발화 직전 무음은 중앙값 500ms다. 임계가 400ms면 숨을 고르는 간격까지 화자 교대로
+//     보고 77%가 경계로 판정된다(5.7초마다 자막 색이 바뀌었다).
+//   - 결과적으로 평균 4.9초마다 줄이 확정돼 화면이 쉴 새 없이 밀려 올라갔다.
+//
+// 새 값으로는 경계 후보가 2772건에서 863건으로 줄어든다(오발동 갭 1228건 → 78건).
 const (
 	// DefaultAudioBoundarySilenceMs 는 오디오 도메인 화자 경계 임계 기본값(ms).
-	DefaultAudioBoundarySilenceMs = 400
-	// legacyAudioBoundarySilenceMs 는 이전 기본값이다. 이 키는 설정 UI에 노출된 적이 없어
-	// 사용자가 직접 넣었을 수 없고(설정 창이 전체 구조를 되저장하면서 기본값이 파일에
-	// 박힌다), 그 값이 그대로 남아 있으면 새 기본값이 영영 적용되지 않는다.
-	// 그래서 Load 시 **옛 기본값과 정확히 같을 때만** 새 기본값으로 1회 마이그레이션한다.
-	legacyAudioBoundarySilenceMs = 700
+	DefaultAudioBoundarySilenceMs = 800
+	// DefaultTurnBoundarySilenceMs 는 텍스트 델타 갭 경계 임계 기본값(ms).
+	DefaultTurnBoundarySilenceMs = 1600
+	// DefaultMaxLines 는 화면에 유지할 자막 줄 수 기본값이다. 2줄이면 글자수 끊김 임계가
+	// 56자(28자 × 2줄)까지 내려가 문장 구조와 무관하게 잘린다. 3줄이면 84자다.
+	DefaultMaxLines = 3
 )
 
-// EngineSettings holds subtitle-engine 튜닝값이다. 설정 UI에 노출하지 않는 숨은 설정만
-// 모으며(스타일이 아니므로 subtitle 블록과 분리 — STYLE_DEFAULT 동기화 대상이 아니다),
-// settings.json을 직접 편집해 조정한다.
+// 마이그레이션 세대. 저장된 설정을 새 기본값에 맞출 때 "이미 한 번 올렸는지"를 이 값으로
+// 판별한다. 세대 표시가 없으면(구버전 파일) 0으로 읽혀 1회 갱신 대상이 된다.
+//
+// 세대 없이 "옛 기본값과 같으면 갱신"만 쓰면, 설정 창에서 옛 값으로 되돌린 순간 다음 실행이
+// 다시 새 값으로 덮어써 **사용자가 영영 되돌릴 수 없다**. 자막 줄 수처럼 설정 창에 노출된
+// 값에는 이 구분이 반드시 필요하다.
+const CurrentSchemaVersion = 1
+
+// v0(세대 표시 없던 파일)의 기본값들. 값이 이것과 정확히 같을 때만 새 기본값으로 올린다
+// (사용자가 직접 바꾼 값은 보존).
+const (
+	legacyTurnBoundarySilenceMs = 1000
+	legacyMaxLines              = 2
+)
+
+// legacyAudioBoundaryMs 는 오디오 경계 임계의 역대 기본값이다(700 → 400 → 800).
+// 두 세대를 모두 담아야 400으로 이미 한 번 올라간 파일도 새 값에 도달한다.
+var legacyAudioBoundaryMs = []int{400, 700}
+
+// EngineSettings holds 자막을 끊는 기준값이다. 설정 창의 자막 > "자막을 끊는 기준"에서
+// 조정한다(스타일이 아니므로 subtitle 블록과 분리 — STYLE_DEFAULT 동기화 대상이 아니다).
 type EngineSettings struct {
-	// TurnBoundarySilenceMs 는 델타 갭이 이만큼(ms) 벌어지면 발화(턴)가 끊긴 것으로 보고
-	// 자막 줄을 확정 + 화자 색을 교대하는 임계다(기본 1000).
+	// TurnBoundarySilenceMs 는 번역이 이만큼(ms) 끊기면 문장이 끝난 것으로 보고 자막 줄을
+	// 확정 + 화자 색을 교대하는 임계다(기본 DefaultTurnBoundarySilenceMs).
 	//
-	// 근거(실측): gemini-3.5-live-translate는 turnComplete를 보내지 않아 경계 신호가 없다.
-	// 수신 델타 간격은 연속 발화 중 0.8~0.9s에 몰리고 실제 발화 경계는 1.0~1.7s에 나타나
-	// 0.9s/1.0s 사이에 절벽이 있다.
+	// gemini-3.5-live-translate는 turnComplete를 보내지 않아 경계 신호가 없으므로, 델타가
+	// 도착하는 간격으로 대신 판정한다. 다만 이 간격은 모델의 스트리밍 주기와 겹치므로
+	// 임계를 낮게 잡으면 정상 스트리밍을 발화 경계로 오인한다(위 const 블록의 실측 참고).
 	//
 	// **0 이하 = 이 트리거 비활성**(기존 2초 무음 확정 동작으로 폴백). 키가 아예 없으면
-	// Load()가 DefaultSettings() 위에 덮어쓰므로 기본 1000이 유지된다(0으로 죽지 않는다).
+	// Load()가 DefaultSettings() 위에 덮어쓰므로 기본값이 유지된다(0으로 죽지 않는다).
 	TurnBoundarySilenceMs int `json:"turnBoundarySilenceMs"`
 
-	// AudioBoundarySilenceMs 는 **오디오 도메인** 화자 경계 임계다(기본 700).
-	// 캡처 오디오의 실무음이 이만큼(ms) 지속된 뒤 새 발화가 시작되면 화자가 바뀐 것으로 보고
-	// 자막 줄을 확정 + 색을 교대한다. 텍스트 델타 갭(turnBoundarySilenceMs)과 달리 서버
-	// 스트리밍 주기·원문/번역 인터리빙의 영향을 받지 않아 1차 트리거로 쓴다.
+	// AudioBoundarySilenceMs 는 **오디오 도메인** 화자 경계 임계다
+	// (기본 DefaultAudioBoundarySilenceMs). 캡처 오디오의 실무음이 이만큼(ms) 지속된 뒤 새
+	// 발화가 시작되면 화자가 바뀐 것으로 보고 자막 줄을 확정 + 색을 교대한다. 텍스트 델타
+	// 갭과 달리 서버 스트리밍 주기·원문/번역 인터리빙의 영향을 받지 않아 1차 트리거로 쓴다.
 	//
 	// **0 이하 = 오디오 경계 관찰 비활성**(델타 갭 트리거만 남는다). 키가 없으면 기본값 유지.
 	AudioBoundarySilenceMs int `json:"audioBoundarySilenceMs"`
 
 	// QuestionBoundary 는 "물음표로 끝난 줄 뒤에 새 델타가 오면 질문→답변 전환" 휴리스틱
-	// 스위치다(기본 true, 설정 UI 미노출). 인터뷰/대화에서 오디오 무음만으로는 놓치는
-	// 화자 교대를 텍스트로 보완한다. 키가 없으면 Load가 기본값(true) 위에 덮어쓰므로 켜진 상태다.
+	// 스위치다(기본 true). 인터뷰/대화에서 오디오 무음만으로는 놓치는 화자 교대를 텍스트로
+	// 보완한다. 키가 없으면 Load가 기본값(true) 위에 덮어쓰므로 켜진 상태다.
 	QuestionBoundary bool `json:"questionBoundary"`
 }
 
@@ -188,6 +219,11 @@ type HUDSettings struct {
 // Settings is the full persisted user-settings model.
 // 모든 후속 웨이브 기능이 여기에 필드를 꽂는다.
 type Settings struct {
+	// SchemaVersion 은 이 파일이 어느 세대의 기본값에 맞춰졌는지다(CurrentSchemaVersion).
+	// migrate가 1회 갱신을 마치면 올려 두므로, 사용자가 설정 창에서 옛 값으로 되돌려도
+	// 다음 실행이 다시 덮어쓰지 않는다.
+	SchemaVersion int `json:"schemaVersion"`
+
 	Model     ModelSettings     `json:"model"`
 	Language  LanguageSettings  `json:"language"`
 	Input     InputSettings     `json:"input"`
@@ -207,6 +243,8 @@ type Settings struct {
 // Date/난수 없음(결정적).
 func DefaultSettings() Settings {
 	return Settings{
+		// 새로 만든 파일은 이미 최신 세대다(마이그레이션 대상 아님).
+		SchemaVersion: CurrentSchemaVersion,
 		Model: ModelSettings{
 			ID: GeminiModel, // 폴백 기본값 = 상수. settings.json에서 덮어써 모델 교체.
 		},
@@ -220,22 +258,22 @@ func DefaultSettings() Settings {
 			DeviceID: "",
 		},
 		Subtitle: SubtitleSettings{
-			FontFamily:    "",          // StyleDefault.fontName
-			FontSize:      34.0,        // StyleDefault.fontSize
-			FontWeight:    "bold",      // StyleDefault.weight
-			TextColor:     "#FFFFFFFF", // StyleDefault.textColorHex
-			AltTextColor:  "#FFD866FF", // 화자 교대 보조 색(흰색 대비 가독 유지되는 부드러운 노랑).
-			StrokeEnabled: true,        // StyleDefault.strokeEnabled
-			StrokeColor:   "#000000E6", // StyleDefault.strokeColorHex
-			StrokeWidth:   2.0,         // 원본은 고정 다중그림자(1/3/6); Wave2 힌트값.
-			GlowEnabled:   false,       // StyleDefault.glowEnabled
-			GlowColor:     "#00E5FFCC", // StyleDefault.glowColorHex
-			GlowRadius:    8.0,         // StyleDefault.glowRadius
-			BgEnabled:     true,        // StyleDefault.backgroundEnabled
-			BgColor:       "#000000FF", // 원본 배경은 검정 + opacity
-			BgOpacity:     0.35,        // StyleDefault.backgroundOpacity
-			Align:         "center",    // StyleDefault.align
-			MaxLines:      2,           // StyleDefault.maxLines
+			FontFamily:    "",              // StyleDefault.fontName
+			FontSize:      34.0,            // StyleDefault.fontSize
+			FontWeight:    "bold",          // StyleDefault.weight
+			TextColor:     "#FFFFFFFF",     // StyleDefault.textColorHex
+			AltTextColor:  "#FFD866FF",     // 화자 교대 보조 색(흰색 대비 가독 유지되는 부드러운 노랑).
+			StrokeEnabled: true,            // StyleDefault.strokeEnabled
+			StrokeColor:   "#000000E6",     // StyleDefault.strokeColorHex
+			StrokeWidth:   2.0,             // 원본은 고정 다중그림자(1/3/6); Wave2 힌트값.
+			GlowEnabled:   false,           // StyleDefault.glowEnabled
+			GlowColor:     "#00E5FFCC",     // StyleDefault.glowColorHex
+			GlowRadius:    8.0,             // StyleDefault.glowRadius
+			BgEnabled:     true,            // StyleDefault.backgroundEnabled
+			BgColor:       "#000000FF",     // 원본 배경은 검정 + opacity
+			BgOpacity:     0.35,            // StyleDefault.backgroundOpacity
+			Align:         "center",        // StyleDefault.align
+			MaxLines:      DefaultMaxLines, // 3 — 2줄은 글자수 끊김 임계가 56자까지 내려간다.
 
 			SpeakerColorAlternate: true, // 화자 전환 근사 2색 교대 기본 on(UI 미노출).
 		},
@@ -263,11 +301,11 @@ func DefaultSettings() Settings {
 			Enabled: true, // 원본 VAD 기본 on(발화 구간만 전송해 비용 절감). 끄면 전 구간 통과.
 		},
 		Engine: EngineSettings{
-			// 1000ms — 실측 델타 갭 분포의 절벽(연속 발화 0.8~0.9s vs 발화 경계 1.0~1.7s).
-			// 오디오 경계(아래)가 1차 트리거이고 이 값은 백업으로 남는다.
-			TurnBoundarySilenceMs: 1000,
-			// 400ms — 실측상 대화 중 화자 교대 갭은 200~600ms에 분포한다(700ms는 1.4s급
-			// 긴 쉼만 잡아 3.5분 세션에서 경계가 3건뿐이었다). 관찰 여운도 300ms로 줄였다.
+			// 1600ms — 델타 도착 간격은 1.00~1.25초에 가장 많이 몰린다. 1000ms로는 정상
+			// 스트리밍의 55%를 경계로 오인했고, 1600ms면 3.4%로 내려간다.
+			TurnBoundarySilenceMs: DefaultTurnBoundarySilenceMs,
+			// 800ms — 발화 직전 무음의 중앙값이 500ms다. 400ms로는 숨 고르는 간격까지
+			// 화자 교대로 보고 77%가 경계로 판정됐다. 800ms면 29%다.
 			AudioBoundarySilenceMs: DefaultAudioBoundarySilenceMs,
 			// 물음표 휴리스틱 기본 on(질문→답변 전환은 무음이 짧아도 화자가 바뀐다).
 			QuestionBoundary: true,
@@ -333,6 +371,10 @@ func Load() (Settings, error) {
 		return DefaultSettings(), err
 	}
 	s := DefaultSettings()
+	// 저장된 파일에 세대 표시가 없으면(구버전) 0으로 남아 migrate 대상이 되어야 한다.
+	// DefaultSettings()의 최신 세대를 그대로 두면 구버전 파일이 "이미 최신"으로 오인돼
+	// 새 기본값이 영영 적용되지 않는다.
+	s.SchemaVersion = 0
 	if err := json.Unmarshal(data, &s); err != nil {
 		log.Printf("[config] settings.json 손상 — 기본값으로 폴백: %v", err)
 		return DefaultSettings(), nil
@@ -340,15 +382,40 @@ func Load() (Settings, error) {
 	return migrate(s), nil
 }
 
-// migrate 는 저장된 설정을 현재 스키마/기본값에 맞춘다(로드 경로 전용, 파일은 건드리지 않는다).
-// 숨은 튜닝 키는 설정 UI가 전체 구조를 되저장하면서 **옛 기본값이 파일에 박히기** 때문에,
-// 값이 옛 기본값과 정확히 같을 때만 새 기본값으로 올린다(사용자가 직접 바꾼 값은 보존).
+// migrate 는 저장된 설정을 현재 세대의 기본값에 맞춘다(로드 경로 전용, 파일은 건드리지
+// 않는다 — 다음 저장 때 자연히 기록된다).
+//
+// 판정은 두 단계다.
+//
+//  1. SchemaVersion 이 이미 최신이면 아무것도 하지 않는다. 이 관문이 없으면 설정 창에서
+//     옛 값으로 되돌린 순간 다음 실행이 다시 덮어써 되돌릴 방법이 사라진다.
+//  2. 값이 **옛 기본값과 정확히 같을 때만** 새 기본값으로 올린다. 직접 조정한 값은 보존한다.
 func migrate(s Settings) Settings {
-	if s.Engine.AudioBoundarySilenceMs == legacyAudioBoundarySilenceMs {
-		log.Printf("[config] engine.audioBoundarySilenceMs %d → %d 로 갱신(옛 기본값 → 새 기본값)",
-			legacyAudioBoundarySilenceMs, DefaultAudioBoundarySilenceMs)
-		s.Engine.AudioBoundarySilenceMs = DefaultAudioBoundarySilenceMs
+	if s.SchemaVersion >= CurrentSchemaVersion {
+		return s
 	}
+
+	// v0 → v1: 회의 실측을 근거로 자막을 끊는 기준을 완화한다(위 const 블록 참고).
+	if s.Engine.TurnBoundarySilenceMs == legacyTurnBoundarySilenceMs {
+		log.Printf("[config] engine.turnBoundarySilenceMs %d → %d 로 갱신(옛 기본값 → 새 기본값)",
+			s.Engine.TurnBoundarySilenceMs, DefaultTurnBoundarySilenceMs)
+		s.Engine.TurnBoundarySilenceMs = DefaultTurnBoundarySilenceMs
+	}
+	for _, legacy := range legacyAudioBoundaryMs {
+		if s.Engine.AudioBoundarySilenceMs == legacy {
+			log.Printf("[config] engine.audioBoundarySilenceMs %d → %d 로 갱신(옛 기본값 → 새 기본값)",
+				legacy, DefaultAudioBoundarySilenceMs)
+			s.Engine.AudioBoundarySilenceMs = DefaultAudioBoundarySilenceMs
+			break
+		}
+	}
+	if s.Subtitle.MaxLines == legacyMaxLines {
+		log.Printf("[config] subtitle.maxLines %d → %d 로 갱신(옛 기본값 → 새 기본값)",
+			legacyMaxLines, DefaultMaxLines)
+		s.Subtitle.MaxLines = DefaultMaxLines
+	}
+
+	s.SchemaVersion = CurrentSchemaVersion
 	return s
 }
 

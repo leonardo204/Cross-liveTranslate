@@ -31,6 +31,8 @@ import (
 	"cross-livetranslate/internal/display"
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/permission"
+	"cross-livetranslate/internal/reveal"
+	"cross-livetranslate/internal/txlog"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
 )
@@ -42,6 +44,23 @@ type ModelInfo struct {
 	Name            string `json:"name"`
 	Engine          string `json:"engine"`
 	ModelIdentifier string `json:"modelIdentifier"`
+}
+
+// LogFolder 는 설정 창 "문제 보고"가 보여주는 로그 폴더 하나다.
+//
+//	Kind  — 폴더 열기 요청 시 되돌려 보내는 식별자("diag" | "app").
+//	Label — 사람이 읽는 이름.
+//	Dir   — 폴더 절대경로(없을 수도 있다 — 아직 한 번도 안 쓴 경우).
+//	Note  — 그 폴더에 무엇이 들어 있는지 한 줄 설명.
+//	Size  — 폴더 안 파일 크기 합(바이트). 첨부 전에 크기를 가늠할 수 있게 한다.
+//	Exists — 폴더가 실제로 있는지. false면 프론트가 "아직 기록 없음"으로 표시한다.
+type LogFolder struct {
+	Kind   string `json:"kind"`
+	Label  string `json:"label"`
+	Dir    string `json:"dir"`
+	Note   string `json:"note"`
+	Size   int64  `json:"size"`
+	Exists bool   `json:"exists"`
 }
 
 // PermissionInfo carries OS permission states for the 권한 카테고리.
@@ -274,6 +293,89 @@ func (s *SettingsAPI) PermissionStatus() PermissionInfo {
 		SystemAudio:     sysAudio,
 		ScreenRecording: sysAudio, // 하위호환(구 프론트가 screenRecording 참조).
 	}
+}
+
+// LogFolders returns the two log locations shown in 설정 > 일반 > 문제 보고.
+//
+//   - diag(진단 기록) — 오디오부터 자막까지의 인과 사슬(internal/txlog). 번역이 이상하게
+//     동작한 이유를 여기서 찾는다.
+//   - app(실행 기록)  — 프로세스 로그. 앱이 꺼지거나 켜지지 않는 문제를 여기서 찾는다.
+//
+// 폴더가 아직 없어도 경로는 돌려준다(프론트가 "아직 기록 없음"으로 표시).
+func (s *SettingsAPI) LogFolders() []LogFolder {
+	out := make([]LogFolder, 0, 2)
+
+	diag := LogFolder{
+		Kind:  "diag",
+		Label: "진단 기록",
+		Note:  "번역이 어떻게 동작했는지 순서대로 남습니다. 자막이 이상할 때 이 파일을 보냅니다.",
+	}
+	if dir, err := txlog.Dir(); err == nil {
+		diag.Dir = dir
+		diag.Size, diag.Exists = folderSize(dir)
+	}
+	out = append(out, diag)
+
+	app := LogFolder{
+		Kind:  "app",
+		Label: "실행 기록",
+		Note:  "앱이 켜지고 꺼지는 과정이 남습니다. 앱이 갑자기 종료될 때 이 파일을 보냅니다.",
+	}
+	if dir, err := logDirPath(); err == nil {
+		app.Dir = dir
+		app.Size, app.Exists = folderSize(dir)
+	}
+	out = append(out, app)
+
+	return out
+}
+
+// OpenLogFolder opens one of the log folders in Finder/탐색기. kind는 LogFolders가 준 값이다.
+// 폴더가 아직 없으면 만들어서 연다 — 빈 폴더라도 열리는 편이 "아무 반응 없음"보다 낫다.
+func (s *SettingsAPI) OpenLogFolder(kind string) {
+	var (
+		dir string
+		err error
+	)
+	switch kind {
+	case "diag":
+		dir, err = txlog.Dir()
+	case "app":
+		dir, err = logDirPath()
+	default:
+		log.Println("[settings] 알 수 없는 로그 폴더:", kind)
+		return
+	}
+	if err != nil {
+		log.Println("[settings] 로그 폴더 경로 확인 실패:", err)
+		return
+	}
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		log.Println("[settings] 로그 폴더 생성 실패:", err)
+		return
+	}
+	if err := reveal.Folder(dir); err != nil {
+		log.Println("[settings] 로그 폴더 열기 실패:", err)
+	}
+}
+
+// folderSize 는 폴더 안 **파일들**의 크기 합과 폴더 존재 여부를 돌려준다(하위 폴더는 훑지
+// 않는다 — 로그 폴더는 평평하고, 깊이 들어가면 큰 트리에서 창이 느려진다).
+func folderSize(dir string) (int64, bool) {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return 0, false
+	}
+	var total int64
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if info, err := e.Info(); err == nil {
+			total += info.Size()
+		}
+	}
+	return total, true
 }
 
 // CurrentVersion returns the running application version (설정 일반 카테고리).

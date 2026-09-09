@@ -133,14 +133,14 @@ func TestDefaultSettingsDeterministic(t *testing.T) {
 	}
 }
 
-// TestTurnBoundarySilenceDefaultAndMissingKey: 델타 갭 기반 턴 경계 임계(숨은 설정)는
-// 기본 1000ms이고, **키가 없는 구버전 settings.json을 읽어도 0으로 죽지 않는다**
-// (Load가 DefaultSettings 위에 덮어쓰므로 누락 키는 기본값 유지).
+// TestTurnBoundarySilenceDefaultAndMissingKey: 델타 갭 기반 턴 경계 임계는 기본
+// DefaultTurnBoundarySilenceMs 이고, **키가 없는 구버전 settings.json을 읽어도 0으로 죽지
+// 않는다**(Load가 DefaultSettings 위에 덮어쓰므로 누락 키는 기본값 유지).
 func TestTurnBoundarySilenceDefaultAndMissingKey(t *testing.T) {
 	dir := withTempConfigDir(t)
 
-	if got := DefaultSettings().Engine.TurnBoundarySilenceMs; got != 1000 {
-		t.Fatalf("기본 TurnBoundarySilenceMs = %d, want 1000", got)
+	if got := DefaultSettings().Engine.TurnBoundarySilenceMs; got != DefaultTurnBoundarySilenceMs {
+		t.Fatalf("기본 TurnBoundarySilenceMs = %d, want %d", got, DefaultTurnBoundarySilenceMs)
 	}
 
 	// engine 블록이 통째로 빠진 구버전 파일.
@@ -157,9 +157,9 @@ func TestTurnBoundarySilenceDefaultAndMissingKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load() error = %v", err)
 	}
-	if got.Engine.TurnBoundarySilenceMs != 1000 {
-		t.Fatalf("키 누락 시 TurnBoundarySilenceMs = %d, want 1000(기본 유지)",
-			got.Engine.TurnBoundarySilenceMs)
+	if got.Engine.TurnBoundarySilenceMs != DefaultTurnBoundarySilenceMs {
+		t.Fatalf("키 누락 시 TurnBoundarySilenceMs = %d, want %d(기본 유지)",
+			got.Engine.TurnBoundarySilenceMs, DefaultTurnBoundarySilenceMs)
 	}
 
 	// 명시적으로 0을 넣으면 "비활성" 의도로 그대로 보존된다(기본값으로 되돌리지 않는다).
@@ -178,7 +178,7 @@ func TestTurnBoundarySilenceDefaultAndMissingKey(t *testing.T) {
 }
 
 // TestAudioBoundarySilenceDefaultAndMissingKey: 오디오 도메인 화자 경계 임계(숨은 설정)는
-// 기본 700ms이고, 키가 없는 구버전 settings.json에서도 기본값이 유지된다(0으로 죽지 않음).
+// 기본 DefaultAudioBoundarySilenceMs 이고, 키가 없는 구버전 settings.json에서도 기본값이 유지된다(0으로 죽지 않음).
 // 명시적 0은 "관찰 비활성" 의도로 보존한다.
 func TestAudioBoundarySilenceDefaultAndMissingKey(t *testing.T) {
 	dir := withTempConfigDir(t)
@@ -224,7 +224,7 @@ func TestAudioBoundarySilenceDefaultAndMissingKey(t *testing.T) {
 }
 
 // TestAudioBoundaryLegacyDefaultMigrates: 설정 창이 전체 구조를 되저장하면서 파일에 박힌
-// **옛 기본값(700)** 은 Load 시 새 기본값(400)으로 올라간다. 사용자가 직접 넣은 다른 값은
+// **옛 기본값(700·400)** 은 Load 시 새 기본값으로 올라간다. 사용자가 직접 넣은 다른 값은
 // 그대로 보존돼야 한다(마이그레이션이 사용자 의도를 덮지 않는다).
 func TestAudioBoundaryLegacyDefaultMigrates(t *testing.T) {
 	dir := withTempConfigDir(t)
@@ -297,5 +297,59 @@ func TestQuestionBoundaryDefaultAndMissingKey(t *testing.T) {
 	}
 	if got.Engine.QuestionBoundary {
 		t.Fatal("명시적 false가 보존되지 않았다")
+	}
+}
+
+// TestSchemaMigrationRunsOnceAndRespectsRevert 는 마이그레이션의 핵심 약속 두 가지를 지킨다.
+//
+//  1. 세대 표시가 없는 구버전 파일은 세 값(델타 갭 · 오디오 경계 · 자막 줄 수)이 모두
+//     새 기본값으로 올라간다.
+//  2. 그 뒤 사용자가 설정 창에서 옛 값으로 되돌리면 **다음 실행이 다시 덮어쓰지 않는다**.
+//     자막 줄 수는 설정 창에 노출된 값이라 이 보장이 없으면 되돌릴 방법이 사라진다.
+func TestSchemaMigrationRunsOnceAndRespectsRevert(t *testing.T) {
+	dir := withTempConfigDir(t)
+	path := filepath.Join(dir, configDirName, settingsFileName)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+
+	// v0 파일: schemaVersion 키가 없고 세 값 모두 옛 기본값.
+	legacy := `{"subtitle":{"maxLines":2},"engine":{"turnBoundarySilenceMs":1000,"audioBoundarySilenceMs":400}}`
+	if err := os.WriteFile(path, []byte(legacy), 0o644); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	got, err := Load()
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got.Engine.TurnBoundarySilenceMs != DefaultTurnBoundarySilenceMs {
+		t.Fatalf("turnBoundarySilenceMs 미갱신: %d", got.Engine.TurnBoundarySilenceMs)
+	}
+	if got.Engine.AudioBoundarySilenceMs != DefaultAudioBoundarySilenceMs {
+		t.Fatalf("audioBoundarySilenceMs 미갱신: %d", got.Engine.AudioBoundarySilenceMs)
+	}
+	if got.Subtitle.MaxLines != DefaultMaxLines {
+		t.Fatalf("maxLines 미갱신: %d", got.Subtitle.MaxLines)
+	}
+	if got.SchemaVersion != CurrentSchemaVersion {
+		t.Fatalf("세대 표시가 올라가지 않았다: %d", got.SchemaVersion)
+	}
+
+	// 사용자가 설정 창에서 옛 값으로 되돌린 뒤 저장 → 다시 로드해도 그대로여야 한다.
+	got.Subtitle.MaxLines = 2
+	got.Engine.TurnBoundarySilenceMs = 1000
+	if err := got.Save(); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	again, err := Load()
+	if err != nil {
+		t.Fatalf("Load(2): %v", err)
+	}
+	if again.Subtitle.MaxLines != 2 {
+		t.Fatalf("되돌린 maxLines가 %d 로 덮였다", again.Subtitle.MaxLines)
+	}
+	if again.Engine.TurnBoundarySilenceMs != 1000 {
+		t.Fatalf("되돌린 turnBoundarySilenceMs가 %d 로 덮였다", again.Engine.TurnBoundarySilenceMs)
 	}
 }

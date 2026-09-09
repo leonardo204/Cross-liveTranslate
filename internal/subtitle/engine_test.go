@@ -137,9 +137,28 @@ func TestCharBreak(t *testing.T) {
 
 func TestCharBreakDefaultThreshold(t *testing.T) {
 	e := New()
-	// 기본: max(28*2, 50) = 56.
-	if got := e.effectiveMaxChars(); got != 56 {
-		t.Fatalf("default effectiveMaxChars = %d, want 56", got)
+	// 기본: max(줄당 28자 × 3줄, 사용자 하한 50) = 84.
+	// 2줄이던 시절에는 56자라 문장 구조와 무관하게 잘렸다(회의 로그에서 확인).
+	want := DefaultCharsPerLine * DefaultMaxLines
+	if got := e.effectiveMaxChars(); got != want {
+		t.Fatalf("default effectiveMaxChars = %d, want %d", got, want)
+	}
+}
+
+// TestDefaultBoundaryThresholds 는 기본 임계값 자체를 고정한다. 개별 시나리오 테스트는
+// 임계를 직접 세팅해 숫자를 고정하므로, 기본값이 바뀐 것을 잡아낼 곳이 여기밖에 없다.
+func TestDefaultBoundaryThresholds(t *testing.T) {
+	e := New()
+	if e.TurnBoundarySilence != 1600*time.Millisecond {
+		t.Fatalf("기본 TurnBoundarySilence = %v, want 1.6s", e.TurnBoundarySilence)
+	}
+	if e.MaxLines != 3 {
+		t.Fatalf("기본 MaxLines = %d, want 3", e.MaxLines)
+	}
+	// 델타 갭 임계는 무음 fallback(2s)보다 반드시 짧아야 한다. 역전되면 갭 트리거가
+	// 영영 발동하지 않고 모든 확정이 무음 경로로 흘러간다.
+	if e.TurnBoundarySilence >= e.SilenceTimeout {
+		t.Fatalf("갭 임계(%v)가 무음 fallback(%v)보다 짧지 않다", e.TurnBoundarySilence, e.SilenceTimeout)
 	}
 }
 
@@ -801,6 +820,7 @@ func TestLogfClearAndReset(t *testing.T) {
 // (a) 1.0s 갭 → 경계 확정 + 화자 토글.
 func TestTurnBoundaryGapConfirms(t *testing.T) {
 	e := New()
+	e.TurnBoundarySilence = 1000 * time.Millisecond // 시나리오 숫자를 고정(기본값 변경과 무관하게 검증)
 	logs := collectLogs(e)
 	t0 := time.Unix(1000, 0)
 
@@ -836,6 +856,7 @@ func TestTurnBoundaryGapConfirms(t *testing.T) {
 // (b) 0.9s 갭(경계 미만) → 연속 발화 스트리밍으로 보고 확정하지 않는다.
 func TestTurnBoundaryGapBelowThresholdKeepsBuffer(t *testing.T) {
 	e := New()
+	e.TurnBoundarySilence = 1000 * time.Millisecond // 시나리오 숫자를 고정(기본값 변경과 무관하게 검증)
 	logs := collectLogs(e)
 	t0 := time.Unix(1000, 0)
 
@@ -885,6 +906,7 @@ func TestTurnBoundaryGapDisabledFallsBackToSilence(t *testing.T) {
 // (d) 경계 확정 직후 2s 시점 heartbeat → 추가 확정/토글 없음(no-op).
 func TestTurnBoundaryGapThenSilenceIsNoop(t *testing.T) {
 	e := New()
+	e.TurnBoundarySilence = 1000 * time.Millisecond // 시나리오 숫자를 고정(기본값 변경과 무관하게 검증)
 	t0 := time.Unix(1000, 0)
 	e.IngestTranslatedDelta("한 번만 확정될 줄")
 	e.Heartbeat(t0)
@@ -909,6 +931,7 @@ func TestTurnBoundaryGapThenSilenceIsNoop(t *testing.T) {
 // (e) charBreak로 이미 확정된 뒤 1.0s 갭 → 토글은 정확히 1회(contentSinceBoundary 규칙).
 func TestTurnBoundaryGapAfterCharBreakTogglesOnce(t *testing.T) {
 	e := New()
+	e.TurnBoundarySilence = 1000 * time.Millisecond // 시나리오 숫자를 고정(기본값 변경과 무관하게 검증)
 	e.MaxLines = 1
 	e.CharsPerLine = 5
 	e.MaxCharsBeforeBreak = 0
@@ -976,6 +999,7 @@ func TestTurnBoundaryHintConfirmsAndToggles(t *testing.T) {
 // 갭 확정이 같은 경계를 먼저 잡았으면, 뒤이은 Hint는 토글하지 않는다(이중 토글 방지 불변식).
 func TestTurnBoundaryHintAfterGapNoDoubleToggle(t *testing.T) {
 	e := New()
+	e.TurnBoundarySilence = 1000 * time.Millisecond // 시나리오 숫자를 고정(기본값 변경과 무관하게 검증)
 	t0 := time.Unix(1000, 0)
 
 	e.IngestTranslatedDelta("갭이 먼저 닫는 발화")
@@ -998,6 +1022,7 @@ func TestTurnBoundaryHintAfterGapNoDoubleToggle(t *testing.T) {
 // 반대 순서(오디오 Hint가 먼저, 갭이 뒤늦게)도 토글은 1회다.
 func TestTurnBoundaryGapAfterHintNoDoubleToggle(t *testing.T) {
 	e := New()
+	e.TurnBoundarySilence = 1000 * time.Millisecond // 시나리오 숫자를 고정(기본값 변경과 무관하게 검증)
 	t0 := time.Unix(2000, 0)
 
 	e.IngestTranslatedDelta("오디오가 먼저 닫는 발화입니다.") // 문장 완결 → 즉시 확정
@@ -1215,6 +1240,7 @@ func TestHintAbsorbedByCharBreak(t *testing.T) {
 // 보류 중 갭 확정이 먼저 발동해도 이중 토글이 없다.
 func TestHintAbsorbedByGapNoDoubleToggle(t *testing.T) {
 	e := New()
+	e.TurnBoundarySilence = 1000 * time.Millisecond // 시나리오 숫자를 고정(기본값 변경과 무관하게 검증)
 	logs := collectLogs(e)
 	t0 := time.Unix(1000, 0)
 

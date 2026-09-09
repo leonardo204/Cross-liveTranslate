@@ -423,7 +423,7 @@
                 <button data-val="trailing">오른쪽</button>
               </div>
             </div>
-            <div class="row"><span class="lbl" id="lblMaxLines">최대 줄수: 2</span>
+            <div class="row"><span class="lbl" id="lblMaxLines">최대 줄수: 3</span>
               <div class="stepper"><button id="maxLinesDown">−</button><button id="maxLinesUp">+</button></div>
             </div>
             <div class="row"><span class="lbl">글자색</span><span class="spacer"></span>
@@ -458,6 +458,40 @@
               <input type="range" id="rngBg" min="0" max="1" step="0.01" />
             </div>
             <div class="row"><button class="btn" id="btnResetStyle">스타일 기본값으로 리셋</button></div>
+          </div>
+        </div>
+
+        <div class="section">
+          <div class="sectitle">자막을 끊는 기준</div>
+          <div class="group">
+            <div class="row"><span class="cap">말이 어디서 끝났는지 판단해 자막을 새 줄로 넘기는 기준입니다. 자막이 문장 중간에서 자꾸 끊기면 아래 값을 길게, 여러 사람의 말이 한 줄에 뭉치면 짧게 맞추세요.</span></div>
+            <div class="row"><span class="lbl">쓰는 상황</span><span class="spacer"></span>
+              <div class="seg" id="segEnginePreset">
+                <button data-val="meeting">회의</button>
+                <button data-val="talk">빠른 대화</button>
+                <button data-val="lecture">강의·발표</button>
+              </div>
+            </div>
+            <div class="row"><span class="cap" id="capEnginePreset">회의: 여러 사람이 번갈아 말하고 중간에 잠깐씩 쉬는 자리에 맞춘 기준입니다.</span></div>
+
+            <div class="row"><span class="lbl">말한 사람이 바뀌었다고 보는 기준</span><span class="spacer"></span>
+              <span class="val" id="lblAudioBoundary">보통 (0.8초)</span>
+              <div class="stepper"><button id="audioBoundaryDown">−</button><button id="audioBoundaryUp">+</button></div>
+            </div>
+            <div class="row"><span class="cap">소리가 이만큼 멈췄다가 다시 시작하면 다른 사람이 말하기 시작한 것으로 봅니다. 자막을 새 줄에서 다른 색으로 시작합니다. 짧게 둘수록 자주 나뉘고, 길게 둘수록 한 줄이 길게 이어집니다.</span></div>
+
+            <div class="row"><span class="lbl">문장이 끝났다고 보는 기준</span><span class="spacer"></span>
+              <span class="val" id="lblTurnBoundary">1.6초</span>
+              <div class="stepper"><button id="turnBoundaryDown">−</button><button id="turnBoundaryUp">+</button></div>
+            </div>
+            <div class="row"><span class="cap">번역이 이만큼 끊기면 문장이 끝난 것으로 보고 그 줄을 확정합니다. 너무 짧게 두면 말하는 중에도 문장이 잘리고, 너무 길게 두면 자막이 늦게 정리됩니다.</span></div>
+
+            <div class="row"><span class="lbl">질문 다음은 대답으로 구분</span>
+              <label class="sw"><input type="checkbox" id="tgQuestionBoundary" /><span class="track"></span></label></div>
+            <div class="row"><span class="cap">물음표로 끝난 뒤 이어지는 말을 상대방의 대답으로 보고 줄을 나눕니다. 잠깐 쉬는 시간이 짧은 대화에서 도움이 됩니다.</span></div>
+
+            <div class="row"><button class="btn" id="btnResetEngine">기본값으로 되돌리기</button>
+              <span class="spacer"></span><span class="sec" id="engineMsg"></span></div>
           </div>
         </div>
       </div>
@@ -595,6 +629,15 @@
           </div>
         </div>
         <div class="section">
+          <div class="sectitle">문제 보고</div>
+          <div class="group">
+            <div class="row"><span class="cap">앱이 이상하게 동작하면 아래 폴더의 파일을 첨부해 알려주세요. 무엇이 잘못됐는지 훨씬 빨리 찾을 수 있습니다.</span></div>
+            <div id="logFolders"></div>
+            <div class="row"><span class="cap">기록에는 번역한 자막 내용이 함께 담깁니다. 회의 내용이 들어 있을 수 있으니 공개된 곳에 올리지 말고 담당자에게 직접 보내주세요.</span></div>
+          </div>
+        </div>
+
+        <div class="section">
           <div class="sectitle">설정 초기화</div>
           <div class="group">
             <div class="row"><button class="btn destructive" id="btnReset">설정 초기화</button></div>
@@ -643,7 +686,7 @@
         altTextColor:"#FFD866FF",       // UI 미노출 — 화자 교대 보조 색.
         strokeEnabled:true, strokeColor:"#000000E6", strokeWidth:2,
         glowEnabled:false, glowColor:"#00E5FFCC", glowRadius:8,
-        bgEnabled:true, bgColor:"#000000FF", bgOpacity:0.35, align:"center", maxLines:2,
+        bgEnabled:true, bgColor:"#000000FF", bgOpacity:0.35, align:"center", maxLines:3,
         speakerColorAlternate:true,     // UI 미노출 — 화자 전환 근사 2색 교대 스위치.
       };
 
@@ -776,6 +819,139 @@
       function wireSeg(segId, onPick) {
         document.querySelectorAll("#"+segId+" button").forEach(b =>
           b.addEventListener("click", () => { if (b.disabled) return; setSeg(segId, b.dataset.val); onPick(b.dataset.val); }));
+      }
+
+      // ---- 자막을 끊는 기준 ----
+      // 값은 밀리초지만 사용자에게는 초 단위와 짧은 설명으로 보여준다. 0은 "그 기준을 쓰지
+      // 않음"이며 엔진에서도 해당 트리거를 끈다.
+      //
+      // 문장 끝 기준의 상한을 1.8초로 둔 이유: 엔진은 2초 무음에서 어차피 줄을 확정하므로
+      // 그보다 길게 잡으면 이 기준이 영영 발동하지 않는다.
+      const AUDIO_STEPS = [0, 400, 600, 800, 1000, 1200, 1500];
+      const TURN_STEPS  = [0, 1000, 1200, 1400, 1600, 1800];
+
+      // 상황별 권장값. 회의 기준은 83분 화상회의 로그를 분석해 정했다.
+      const ENGINE_PRESETS = {
+        meeting: { audio: 800,  turn: 1600, question: true,
+                   desc: "회의: 여러 사람이 번갈아 말하고 중간에 잠깐씩 쉬는 자리에 맞춘 기준입니다." },
+        talk:    { audio: 600,  turn: 1200, question: true,
+                   desc: "빠른 대화: 말이 빠르게 오가는 자리입니다. 자막이 자주 나뉘는 대신 누가 말했는지 빨리 구분됩니다." },
+        lecture: { audio: 1200, turn: 1800, question: false,
+                   desc: "강의·발표: 한 사람이 길게 말하는 자리입니다. 문장이 중간에 잘리지 않고 길게 이어집니다." },
+      };
+
+      function engineCfg() {
+        if (!S.engine) S.engine = {};
+        return S.engine;
+      }
+
+      // 가장 가까운 단계로 맞춘다(설정 파일을 직접 고쳐 단계 밖 값이 들어와도 다룰 수 있게).
+      function nearestStep(steps, v) {
+        let best = steps[0];
+        for (const st of steps) if (Math.abs(st - v) < Math.abs(best - v)) best = st;
+        return best;
+      }
+      function stepMove(steps, cur, dir) {
+        const i = steps.indexOf(nearestStep(steps, cur));
+        return steps[Math.min(steps.length - 1, Math.max(0, i + dir))];
+      }
+      function secLabel(ms) { return (ms / 1000).toFixed(1) + "초"; }
+
+      function audioBoundaryLabel(ms) {
+        if (!(ms > 0)) return "사용 안 함";
+        let tail = "";
+        if (ms <= 400) tail = " · 자주 나뉨";
+        else if (ms === 800) tail = " · 기본";
+        else if (ms >= 1500) tail = " · 길게 이어짐";
+        return secLabel(ms) + tail;
+      }
+      function turnBoundaryLabel(ms) {
+        if (!(ms > 0)) return "사용 안 함";
+        return secLabel(ms) + (ms === 1600 ? " · 기본" : "");
+      }
+
+      // 지금 값이 어떤 상황의 권장값과 정확히 같은지 찾아 세그먼트에 표시한다.
+      function matchedPreset() {
+        const e = engineCfg();
+        for (const name of Object.keys(ENGINE_PRESETS)) {
+          const p = ENGINE_PRESETS[name];
+          if (e.audioBoundarySilenceMs === p.audio && e.turnBoundarySilenceMs === p.turn &&
+              !!e.questionBoundary === p.question) return name;
+        }
+        return "";
+      }
+
+      function renderEngine() {
+        const e = engineCfg();
+        $("lblAudioBoundary").textContent = audioBoundaryLabel(e.audioBoundarySilenceMs);
+        $("lblTurnBoundary").textContent = turnBoundaryLabel(e.turnBoundarySilenceMs);
+        $("tgQuestionBoundary").checked = !!e.questionBoundary;
+        const name = matchedPreset();
+        setSeg("segEnginePreset", name);
+        $("capEnginePreset").textContent = name
+          ? ENGINE_PRESETS[name].desc
+          : "직접 맞춘 값입니다. 위에서 상황을 고르면 권장값으로 한 번에 바뀝니다.";
+      }
+
+      // ---- 문제 보고: 로그 폴더 ----
+      function fmtSize(bytes) {
+        if (!bytes) return "";
+        if (bytes < 1024) return bytes + " B";
+        if (bytes < 1024 * 1024) return Math.round(bytes / 1024) + " KB";
+        return (bytes / (1024 * 1024)).toFixed(1) + " MB";
+      }
+
+      async function renderLogFolders() {
+        const box = $("logFolders");
+        if (!box) return;
+        const a = api();
+        let folders = [];
+        try { folders = (a && a.LogFolders && await a.LogFolders()) || []; } catch (_) {}
+        box.innerHTML = "";
+        if (!folders.length) {
+          const row = document.createElement("div");
+          row.className = "row";
+          row.innerHTML = '<span class="cap">로그 폴더를 확인하지 못했습니다.</span>';
+          box.appendChild(row);
+          return;
+        }
+        for (const f of folders) {
+          const dir = f.dir || f.Dir || "";
+          const kind = f.kind || f.Kind || "";
+          const label = f.label || f.Label || "";
+          const note = f.note || f.Note || "";
+          const exists = (f.exists !== undefined) ? f.exists : f.Exists;
+          const size = (f.size !== undefined) ? f.size : f.Size;
+
+          // 경로 + 열기 버튼. 경로가 길어 잘리므로 전체 경로를 툴팁으로 함께 둔다.
+          const row = document.createElement("div");
+          row.className = "row";
+          const name = document.createElement("span");
+          name.className = "lbl";
+          name.textContent = label;
+          const val = document.createElement("span");
+          val.className = "val";
+          val.style.cssText = "overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:300px";
+          val.textContent = exists ? (fmtSize(size) || "비어 있음") : "아직 기록 없음";
+          val.title = dir;
+          const spacer = document.createElement("span");
+          spacer.className = "spacer";
+          const btn = document.createElement("button");
+          btn.className = "btn";
+          btn.textContent = "폴더 열기";
+          btn.addEventListener("click", () => {
+            const b = api();
+            if (b && b.OpenLogFolder) { try { b.OpenLogFolder(kind); } catch (_) {} }
+          });
+          row.appendChild(name); row.appendChild(val); row.appendChild(spacer); row.appendChild(btn);
+          box.appendChild(row);
+
+          const cap = document.createElement("div");
+          cap.className = "row";
+          cap.innerHTML = '<span class="cap"></span>';
+          cap.firstChild.textContent = note + " (" + dir + ")";
+          box.appendChild(cap);
+        }
       }
 
       // ---- 미리보기 ----
@@ -938,6 +1114,9 @@
         // 자막 스타일
         loadStyleControls();
 
+        // 자막을 끊는 기준
+        renderEngine();
+
         // 오디오
         await populateOutput();
         updateAudioRows();
@@ -965,6 +1144,9 @@
 
         // 권한
         refreshPermissions();
+
+        // 일반 — 문제 보고(로그 폴더)
+        await renderLogFolders();
 
         // 일반 — 버전
         try { $("curVersion").textContent = await a.CurrentVersion(); }
@@ -1010,6 +1192,49 @@
         $("btnRefreshInput").addEventListener("click", async () => {
           const a = api(); try { if (a && a.RefreshDevices) await a.RefreshDevices(); } catch (_) {}
           await populateInput();
+        });
+
+        // 자막을 끊는 기준 — 값은 즉시 저장되고, controller가 재시작 없이 반영한다.
+        wireSeg("segEnginePreset", (v) => {
+          const p = ENGINE_PRESETS[v];
+          if (!p) return;
+          const e = engineCfg();
+          e.audioBoundarySilenceMs = p.audio;
+          e.turnBoundarySilenceMs = p.turn;
+          e.questionBoundary = p.question;
+          $("engineMsg").textContent = "";
+          renderEngine();
+          commit();
+        });
+        const bumpAudio = (dir) => {
+          const e = engineCfg();
+          e.audioBoundarySilenceMs = stepMove(AUDIO_STEPS, e.audioBoundarySilenceMs, dir);
+          $("engineMsg").textContent = "";
+          renderEngine(); commit();
+        };
+        const bumpTurn = (dir) => {
+          const e = engineCfg();
+          e.turnBoundarySilenceMs = stepMove(TURN_STEPS, e.turnBoundarySilenceMs, dir);
+          $("engineMsg").textContent = "";
+          renderEngine(); commit();
+        };
+        $("audioBoundaryDown").addEventListener("click", () => bumpAudio(-1));
+        $("audioBoundaryUp").addEventListener("click", () => bumpAudio(1));
+        $("turnBoundaryDown").addEventListener("click", () => bumpTurn(-1));
+        $("turnBoundaryUp").addEventListener("click", () => bumpTurn(1));
+        $("tgQuestionBoundary").addEventListener("change", () => {
+          engineCfg().questionBoundary = $("tgQuestionBoundary").checked;
+          $("engineMsg").textContent = "";
+          renderEngine(); commit();
+        });
+        $("btnResetEngine").addEventListener("click", () => {
+          const p = ENGINE_PRESETS.meeting; // 앱 기본값 = 회의 권장값.
+          const e = engineCfg();
+          e.audioBoundarySilenceMs = p.audio;
+          e.turnBoundarySilenceMs = p.turn;
+          e.questionBoundary = p.question;
+          $("engineMsg").textContent = "기본값으로 되돌렸습니다.";
+          renderEngine(); commit();
         });
 
         // 자막 — 번역/위치

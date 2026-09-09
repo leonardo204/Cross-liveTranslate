@@ -162,17 +162,47 @@ func main() {
 	}
 }
 
-// logDir returns ~/Library/Logs/Cross-liveTranslate (created if missing).
+// logDir returns the per-platform folder for role logs (created if missing).
+//
+//	darwin  ~/Library/Logs/Cross-liveTranslate
+//	windows %LOCALAPPDATA%\Cross-liveTranslate\logs
+//	기타     ~/.local/state/Cross-liveTranslate
+//
+// 예전에는 모든 플랫폼이 macOS 관례(~/Library/Logs)를 그대로 썼다. Windows에서는 그런 폴더가
+// 없어 홈 아래에 낯선 Library 폴더가 생겼고, 사용자가 로그를 찾아 첨부하기 어려웠다.
 func logDir() (string, error) {
-	home, err := os.UserHomeDir()
+	dir, err := logDirPath()
 	if err != nil {
 		return "", err
 	}
-	dir := filepath.Join(home, "Library", "Logs", "Cross-liveTranslate")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return "", err
 	}
 	return dir, nil
+}
+
+// logDirPath 는 폴더를 만들지 않고 경로만 계산한다(설정 창이 경로를 보여줄 때 쓴다).
+func logDirPath() (string, error) {
+	const appName = "Cross-liveTranslate"
+	if runtime.GOOS == "windows" {
+		// %LOCALAPPDATA%가 비는 경우는 사실상 없지만, 없으면 UserConfigDir(%AppData%)로 뒤로 물러난다.
+		base := os.Getenv("LOCALAPPDATA")
+		if base == "" {
+			var err error
+			if base, err = os.UserConfigDir(); err != nil {
+				return "", err
+			}
+		}
+		return filepath.Join(base, appName, "logs"), nil
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
+	}
+	if runtime.GOOS == "darwin" {
+		return filepath.Join(home, "Library", "Logs", appName), nil
+	}
+	return filepath.Join(home, ".local", "state", appName), nil
 }
 
 // setupFileLogging redirects the standard logger to <role>.log (append) tee'd to

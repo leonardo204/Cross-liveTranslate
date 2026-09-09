@@ -47,8 +47,9 @@ import (
 
 // 기본 튜닝값(원본 AppConfig/SettingsStore/SubtitleEngine 에서 그대로 이식).
 const (
-	// DefaultMaxLines 는 화면에 유지할 roll-up 줄 수(원본 StyleDefault.maxLines).
-	DefaultMaxLines = 2
+	// DefaultMaxLines 는 화면에 유지할 roll-up 줄 수. config.DefaultMaxLines 와 같은 값이다
+	// (controller가 설정값을 주입하므로 이 상수는 headless/New()의 초기값 용도).
+	DefaultMaxLines = 3
 	// DefaultCharsPerLine 은 줄당 글자 환산 계수(원본 AppConfig.charsPerSubtitleLine).
 	DefaultCharsPerLine = 28
 	// DefaultMaxCharsBeforeBreak 은 사용자 지정 charBreak 임계 하한(원본 AppConfig.defaultMaxCharsBeforeBreak).
@@ -59,13 +60,12 @@ const (
 	DefaultSilenceTimeout = 2 * time.Second
 	// DefaultTurnBoundarySilence 는 턴(발화) 경계로 간주하는 델타 갭 임계다.
 	//
-	// 근거(실측): gemini-3.5-live-translate는 turnComplete를 보내지 않는(연속 스트림) 모델이라
-	// 턴 경계 신호가 없다. 실사용 로그의 수신 델타 간격 분포를 보면 연속 발화 중 스트리밍
-	// 주기는 0.8~0.9s(140회)에 몰려 있고, 발화가 실제로 끊긴 지점은 1.0~1.7s(16회)에 나타나
-	// 0.9s와 1.0s 사이에 뚜렷한 절벽이 있다. 그래서 1.0s를 경계 임계로 잡는다.
-	// (원본 2.0s 무음 확정은 너무 늦어 확정 54건 중 52건이 charBreak로 잡혀 색 교대가
-	// 사실상 동작하지 않았다.)
-	DefaultTurnBoundarySilence = 1 * time.Second
+	// 근거(실측, 83분 화상회의): gemini-3.5-live-translate는 turnComplete를 보내지 않는
+	// 연속 스트림이라 턴 경계 신호가 없다. 수신 델타 간격은 1.00~1.25초에 가장 많이 몰리며,
+	// 임계를 1.0초로 두면 정상 스트리밍 간격의 55%를 경계로 오인해 문장 한복판에서 자막이
+	// 끊겼다(갭으로 끊긴 줄의 57%가 문장 중간). 1.6초면 오발동이 3.4%로 내려간다.
+	// config.DefaultTurnBoundarySilenceMs 와 같은 값을 유지한다.
+	DefaultTurnBoundarySilence = 1600 * time.Millisecond
 	// HintMaxDeltas 는 오디오 경계 보류(문장 완결 대기)의 상한 델타 수. 이만큼 지나도
 	// 종결부호가 오지 않으면 문장 중간이라도 확정한다(무한 보류 방지).
 	HintMaxDeltas = 2

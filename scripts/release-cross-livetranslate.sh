@@ -31,23 +31,30 @@ export MINISIGN_SECRET_KEY="${MINISIGN_SECRET_KEY:-$HOME/.tauri/cross-livetransl
 
 # ── 기본값 설정 ────────────────────────────────────────────────────────────
 export APPLE_NOTARY_PROFILE="${APPLE_NOTARY_PROFILE:-CROSS_LIVETRANSLATE_NOTARY}"
+# 등록 실패 시 APPLE_NOTARY_PROFILE 을 unset 하므로, 안내 문구용으로 이름을 따로 남긴다.
+export APPLE_NOTARY_PROFILE_NAME="$APPLE_NOTARY_PROFILE"
 # APPLE_SIGNING_IDENTITY는 .env에서 설정 권장 (하드코딩 금지)
 # TAURI_CLI_DIR은 release.sh 기본값(/Users/zerolive/work/flipbookMaker) 사용
 
 # ── Apple Notarization keychain profile 자동 등록 ─────────────────────────
 # keychain에 profile이 없고 .env에 자격증명이 있으면 한 번만 자동 등록.
 # 이후 실행부터는 keychain만 사용 (.env Apple 항목은 백업용).
+# 앱 암호 변수 이름은 두 가지가 섞여 쓰인다: APPLE_APP_PASSWORD(문서 표기)와
+# APPLE_PASSWORD(실제 .env 표기). 하나만 보면 이름이 어긋났을 때 조용히 등록을 건너뛰고
+# 공증 없는 빌드가 나간다(v1.9.2에서 실제로 발생). 둘 다 받는다.
+NOTARY_PASSWORD="${APPLE_APP_PASSWORD:-${APPLE_PASSWORD:-}}"
+
 if ! xcrun notarytool history --keychain-profile "$APPLE_NOTARY_PROFILE" >/dev/null 2>&1; then
-  if [[ -n "${APPLE_ID:-}" && -n "${APPLE_APP_PASSWORD:-}" && -n "${APPLE_TEAM_ID:-}" ]]; then
+  if [[ -n "${APPLE_ID:-}" && -n "$NOTARY_PASSWORD" && -n "${APPLE_TEAM_ID:-}" ]]; then
     printf "\033[1;36m▸\033[0m notarytool store-credentials %s\n" "$APPLE_NOTARY_PROFILE"
     xcrun notarytool store-credentials "$APPLE_NOTARY_PROFILE" \
       --apple-id      "$APPLE_ID" \
       --team-id       "$APPLE_TEAM_ID" \
-      --password      "$APPLE_APP_PASSWORD" >/dev/null
+      --password      "$NOTARY_PASSWORD" >/dev/null
     printf "\033[1;32m✔\033[0m keychain profile 등록 완료: %s\n" "$APPLE_NOTARY_PROFILE"
   else
     printf "\033[1;33m⚠\033[0m APPLE_NOTARY_PROFILE(%s) 미등록.\n" "$APPLE_NOTARY_PROFILE" >&2
-    printf "  .env에 APPLE_ID / APPLE_APP_PASSWORD / APPLE_TEAM_ID를 채우거나\n" >&2
+    printf "  .env에 APPLE_ID / APPLE_PASSWORD(또는 APPLE_APP_PASSWORD) / APPLE_TEAM_ID를 채우거나\n" >&2
     printf "  xcrun notarytool store-credentials 로 직접 등록하세요.\n" >&2
     printf "  → notarize/staple 단계 스킵 (Gatekeeper 경고 발생)\n" >&2
     unset APPLE_NOTARY_PROFILE

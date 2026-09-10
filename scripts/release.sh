@@ -142,8 +142,15 @@ if [[ -n "${APPLE_NOTARY_PROFILE:-}" ]]; then
   else
     die "notarization 실패. xcrun notarytool log <submission-id> --keychain-profile $APPLE_NOTARY_PROFILE 로 사유 확인"
   fi
+elif [[ "$GH_UPLOAD" == "1" ]]; then
+  # 실제 배포(--upload)에서 공증을 건너뛰면 Gatekeeper 경고가 붙은 DMG가 그대로 올라간다.
+  # v1.9.2가 그렇게 나갔고, 경고만 찍힌 채 exit 0 이라 아무도 알아채지 못했다.
+  # 배포 경로에서는 중단한다. 공증 없이 만들고 싶으면 --upload 없이 실행한다.
+  die "APPLE_NOTARY_PROFILE 미등록 — 공증 없이 배포할 수 없습니다.
+  .env의 APPLE_ID / APPLE_PASSWORD / APPLE_TEAM_ID 를 확인하거나
+  xcrun notarytool store-credentials \"$APPLE_NOTARY_PROFILE_NAME\" 로 등록한 뒤 다시 실행하세요."
 else
-  warn "APPLE_NOTARY_PROFILE 미설정 — notarize/staple 스킵 (Gatekeeper 경고 발생 가능)"
+  warn "APPLE_NOTARY_PROFILE 미설정 — notarize/staple 스킵 (로컬 빌드: --upload 없음)"
 fi
 
 # ── 5. minisign 서명 (표준 minisign) ────────────────────────────────────────

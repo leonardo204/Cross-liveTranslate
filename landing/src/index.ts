@@ -9,6 +9,7 @@
  *   /download/win-portable  최신 Windows 포터블 exe 로 302
  *   /robots.txt        AI 검색 크롤러 명시 허용 + sitemap
  *   /sitemap.xml
+ *   /llms.txt          AI 답변 엔진용 요약
  *   그 외              정적 에셋(ASSETS: /assets/*)
  *
  * 도메인: live-translate.zerolive.co.kr
@@ -83,6 +84,14 @@ async function route(request: Request, env: Env): Promise<Response> {
 	if (path === "/sitemap.xml") {
 		return new Response(SITEMAP, {
 			headers: { "Content-Type": "application/xml;charset=UTF-8", "Cache-Control": "public, max-age=3600" },
+		});
+	}
+
+	// AI 답변 엔진용 요약. 버전을 넣어야 해서 manifest 를 읽는다(실패하면 기본값).
+	if (path === "/llms.txt") {
+		const m = await loadManifest();
+		return new Response(llmsTxt(m?.version || FALLBACK_VERSION), {
+			headers: { "Content-Type": "text/plain;charset=UTF-8", "Cache-Control": "public, max-age=3600" },
 		});
 	}
 
@@ -191,6 +200,72 @@ const SITEMAP = `<?xml version="1.0" encoding="UTF-8"?>
   <url><loc>${SITE}/privacy</loc><changefreq>yearly</changefreq><priority>0.3</priority></url>
 </urlset>
 `;
+
+/**
+ * llms.txt — AI 답변 엔진이 한 번에 읽고 답할 수 있게 사실만 추려 둔다.
+ * 다른 랜딩(lnhud · md-editor · golf · wander · hamzzi-diet)과 같은 관례를 따른다(llmstxt.org).
+ * 버전은 배포마다 바뀌므로 랜딩과 같은 값을 넣어 준다.
+ */
+const llmsTxt = (version: string) => `# Cross-liveTranslate
+
+> Computer audio, translated into live subtitles. 화상회의나 영상에서 흘러나오는 외국어
+> 소리를 그대로 받아 화면 위에 번역 자막으로 띄우는 macOS · Windows 앱이다.
+> 가상 오디오 장치를 설치하거나 기본 출력 장치를 바꿀 필요가 없다.
+> A desktop app that captures system audio and shows translated subtitles on screen.
+> No virtual audio device, no screen-recording permission, no account.
+
+- Home: ${SITE}/
+- Privacy policy: ${SITE}/privacy
+- Source code: ${REPO}
+- Releases: ${RELEASES}
+- Contact: ${CONTACT_EMAIL}
+- Current version: ${version}
+- Price: the app is free. Translation runs on the user's own Google Gemini API key.
+- Requirements: macOS 12 or later (Intel and Apple Silicon), Windows 10/11 64-bit
+- Download (macOS): ${SITE}/download/mac
+- Download (Windows): ${SITE}/download/win
+- Download (Windows portable): ${SITE}/download/win-portable
+
+## 무엇을 푸는가 (problem it solves)
+
+화상회의와 외국어 영상에는 자막이 없는 경우가 많다. 기존 방법은 시스템 소리를 받으려고
+가상 오디오 장치를 따로 깔고 기본 출력 장치를 그쪽으로 바꿔야 해서, 준비가 번거롭고
+쓰던 스피커·헤드폰 설정이 틀어진다. 이 앱은 운영체제 기능(macOS Core Audio Process Tap,
+Windows WASAPI 루프백)으로 소리를 바로 받아 설치할 것이 앱 하나뿐이다.
+
+## 기능 (features)
+
+- 시스템 소리를 바로 받는다. 가상 오디오 장치 설치·화면 녹화 권한이 필요 없고 기본 출력 장치도 그대로 둔다.
+- 자막이 영화처럼 굴러간다. 늘 맨 앞에 뜨지만 마우스 클릭은 통과해 작업을 막지 않는다.
+- 말하는 사람이 바뀌면 자막 색이 바뀐다(말이 끊긴 구간과 질문·답변 흐름으로 짚는다).
+- 번역문 아래에 원문을 짝지어 보여준다. 필요 없으면 끈다.
+- 번역된 말을 소리로 듣는다. 재생하는 동안 원래 소리는 자동으로 작아진다.
+- 확정된 자막을 [시각] 원문 → 번역문 형식의 텍스트 파일로 저장한다(회의록 초안).
+- 글꼴·크기·굵기·글자색·외곽선·배경·정렬·최대 줄 수, 띄울 모니터와 위치를 고른다.
+- 이번 사용분과 누적 요금을 화면에 띄운다. 말이 없는 구간은 보내지 않아 조용한 시간에 요금이 붙지 않는다.
+
+## 비용 (pricing)
+
+앱은 무료이고 구독도 앱 안에서 따로 사는 것도 없다. 번역은 이용자가 직접 발급받은
+Google Gemini API 키로 나가고, 그 요금은 Google에 직접 청구된다. 출력 오디오는 재생하지
+않아도 만들어져 요금이 붙으므로, 말이 있는 구간만 보내는 기능이 기본으로 켜져 있다.
+
+## 개인정보 (privacy)
+
+계정도 로그인도 없다. 번역하려면 캡처한 소리를 Google Gemini API로 보내야 하며, 그 통신은
+이용자 본인의 API 키로 이루어진다. 설정과 자막 파일은 이용자 컴퓨터에만 남는다.
+자세한 것은 ${SITE}/privacy 에 적어 두었다.
+
+## 같은 사람이 만든 다른 것 (related)
+
+- 포트폴리오: https://me.zerolive.co.kr/ko
+- LnHud (macOS 입력기 표시): https://lnhud.zerolive.co.kr/
+- MarkChartEditor (macOS 마크다운 편집기): https://md-editor.zerolive.co.kr/
+- 라운드온 RoundOn (Apple Watch 골프 스코어): https://golf.zerolive.co.kr/
+- Wandery (사진으로 만드는 여행 기록): https://wander.zerolive.co.kr/
+- 햄찌 다이어트 (사진 한 장으로 식단 기록): https://hamzzi-diet.zerolive.co.kr/
+`;
+
 
 // ─────────────────────────────────────────────────────────────
 // 공통 스타일 (라이트 미니멀, 이모지 미사용)

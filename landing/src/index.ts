@@ -264,6 +264,7 @@ Google Gemini API 키로 나가고, 그 요금은 Google에 직접 청구된다.
 - 라운드온 RoundOn (Apple Watch 골프 스코어): https://golf.zerolive.co.kr/
 - Wandery (사진으로 만드는 여행 기록): https://wander.zerolive.co.kr/
 - 햄찌 다이어트 (사진 한 장으로 식단 기록): https://hamzzi-diet.zerolive.co.kr/
+- zeroPlayer (상황에 맞는 인터넷 라디오·팟캐스트): https://zeroplayer.zerolive.co.kr/
 `;
 
 

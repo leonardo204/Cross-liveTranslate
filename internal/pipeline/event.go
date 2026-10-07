@@ -32,6 +32,13 @@ const (
 	State
 	// PermanentFailure signals reconnection was abandoned (세션 수명 종료).
 	PermanentFailure
+	// TranslatedInterim carries the not-yet-final translated tail(확정 전 결과).
+	// Text가 직전 꼬리를 통째로 대체한다(빈 문자열이면 꼬리 없음). Soniox 전용.
+	TranslatedInterim
+	// SourceInterim carries the not-yet-final source(원문) tail. TranslatedInterim 과 같은 규칙.
+	// Soniox는 번역은 확정분만 보내고 미확정 결과는 원문에만 주기 때문에, 말을 알아듣고 있다는
+	// 것을 바로 보여 주는 통로는 이쪽이다.
+	SourceInterim
 )
 
 // String renders the Kind for logging.
@@ -55,6 +62,10 @@ func (k Kind) String() string {
 		return "State"
 	case PermanentFailure:
 		return "PermanentFailure"
+	case TranslatedInterim:
+		return "TranslatedInterim"
+	case SourceInterim:
+		return "SourceInterim"
 	default:
 		return "Unknown"
 	}
@@ -98,6 +109,9 @@ type UsageInfo struct {
 	TotalTokens int
 	// SentSamples is the number of 16kHz mono samples sent (입력 비용 추정용).
 	SentSamples int
+	// OutputTextTokens is 텍스트 출력 토큰 수(받아쓰기+번역). Soniox처럼 텍스트로 과금하는
+	// 엔진만 채운다.
+	OutputTextTokens int
 }
 
 // Event is the single result event type every backend/pipeline produces.
@@ -110,6 +124,12 @@ type Event struct {
 	Usage    *UsageInfo     // Usage
 	State    LifecycleState // State
 	Err      error          // State(error) / PermanentFailure
+
+	// Speaker 는 엔진이 실제로 구분한 화자 번호다("1", "2" …). 화자 구분을 하는 엔진(Soniox)만
+	// 채운다. 비어 있으면 화자 정보가 없는 것이고, 자막 엔진은 무음 기반 추정으로 동작한다.
+	Speaker string
+	// Lang 은 이 발화의 **원문** 언어 코드다(예: "it"). 번역 델타에도 원문 언어를 싣는다.
+	Lang string
 }
 
 // Provider receives audio and emits a stream of Events.

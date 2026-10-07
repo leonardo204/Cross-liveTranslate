@@ -49,6 +49,13 @@ type SubtitleMsg struct {
 	Source   string   `json:"source,omitempty"`
 	Notice   string   `json:"notice,omitempty"`
 	Visible  bool     `json:"visible"`
+	// Labels — 줄별 화자·언어 표시(예: "화자 2 · IT"). 화자 구분 엔진(Soniox)일 때만 채운다.
+	// 렌더러가 원문 줄 앞에 작게 붙인다. Lines와 같은 길이.
+	Labels []string `json:"labels,omitempty"`
+	// Tails — 줄별 미확정 번역 꼬리. 렌더러가 번역 줄 뒤에 흐리게 붙인다. Lines와 같은 길이.
+	Tails []string `json:"tails,omitempty"`
+	// SourceTails — 줄별 미확정 원문 꼬리. 렌더러가 원문 줄 뒤에 흐리게 붙인다.
+	SourceTails []string `json:"sourceTails,omitempty"`
 }
 
 // StyleMsg carries the subtitle rendering style + placement pushed controller →

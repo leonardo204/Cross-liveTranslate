@@ -29,10 +29,34 @@ const settingsFileName = "settings.json"
 // settings.json. 테스트에서 격리된 임시 디렉토리를 주입하기 위한 훅(프로덕션은 빈 값).
 var configDirOverride string
 
-// ModelSettings holds the Gemini 모델 식별자 선택(소프트코딩 오버라이드).
-// ID가 비면 config.GeminiModel 폴백 기본값을 쓴다(설정 UI 미노출 — settings.json 직접 편집).
+// ModelSettings holds 번역 엔진 선택 + Gemini 모델 식별자(소프트코딩 오버라이드).
+//
+//	Engine — "gemini"(기본) | "soniox". 설정 창 모델 탭에서 고른다.
+//	ID     — Gemini 모델 식별자. 비면 config.GeminiModel 기본값(settings.json 직접 편집).
 type ModelSettings struct {
-	ID string `json:"id"` // Gemini 모델 식별자(models/...). ""이면 GeminiModel 기본값 사용.
+	Engine string `json:"engine"`
+	ID     string `json:"id"` // Gemini 모델 식별자(models/...). ""이면 GeminiModel 기본값 사용.
+}
+
+// TranslationTerm 은 용어집의 "정해 둔 번역" 한 쌍이다(원문 → 번역).
+type TranslationTerm struct {
+	Source string `json:"source"`
+	Target string `json:"target"`
+}
+
+// SonioxSettings holds Soniox 엔진 전용 설정이다. Gemini를 고르면 쓰이지 않는다.
+//
+//	LanguageHints    — 회의에서 나올 언어 코드(예: it, en, ko). 비면 자동 판별에만 맡긴다.
+//	Context          — 회의 설명(자유 문장). 분야·주제·말투 지시를 적는다.
+//	Terms            — 알아들어야 할 단어(제품명·사람 이름·약어).
+//	TranslationTerms — 정해 둔 번역(원문 → 번역).
+//
+// Soniox는 이 묶음(context)을 연결할 때 함께 받으며, 합쳐서 약 8,000토큰까지 허용한다.
+type SonioxSettings struct {
+	LanguageHints    []string          `json:"languageHints"`
+	Context          string            `json:"context"`
+	Terms            []string          `json:"terms"`
+	TranslationTerms []TranslationTerm `json:"translationTerms"`
 }
 
 // LanguageSettings holds translation language selection (원본 SettingsStore 언어 그룹).
@@ -225,6 +249,7 @@ type Settings struct {
 	SchemaVersion int `json:"schemaVersion"`
 
 	Model     ModelSettings     `json:"model"`
+	Soniox    SonioxSettings    `json:"soniox"`
 	Language  LanguageSettings  `json:"language"`
 	Input     InputSettings     `json:"input"`
 	Subtitle  SubtitleSettings  `json:"subtitle"`
@@ -246,7 +271,8 @@ func DefaultSettings() Settings {
 		// 새로 만든 파일은 이미 최신 세대다(마이그레이션 대상 아님).
 		SchemaVersion: CurrentSchemaVersion,
 		Model: ModelSettings{
-			ID: GeminiModel, // 폴백 기본값 = 상수. settings.json에서 덮어써 모델 교체.
+			Engine: EngineGemini, // 기본 엔진은 지금까지와 같다.
+			ID:     GeminiModel,  // 폴백 기본값 = 상수. settings.json에서 덮어써 모델 교체.
 		},
 		Language: LanguageSettings{
 			Target:     DefaultTargetLanguage, // "ko" (AppConfig.defaultTargetLanguageCode)

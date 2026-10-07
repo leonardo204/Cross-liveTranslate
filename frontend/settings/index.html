@@ -152,6 +152,19 @@
       border-radius: 6px; box-shadow: var(--control-shadow);
     }
 
+    textarea {
+      flex: 1; min-width: 0; width: 100%; box-sizing: border-box;
+      padding: 6px 8px; font-size: 13px; font-family: inherit; line-height: 1.45;
+      color: var(--text); background: var(--control-bg);
+      border: 1px solid var(--control-border); border-radius: 6px;
+      box-shadow: var(--control-shadow); resize: vertical;
+    }
+    .pairs { display: flex; flex-direction: column; gap: 6px; width: 100%; }
+    .pair { display: flex; gap: 6px; align-items: center; }
+    .pair .arrow { color: var(--secondary, #888); flex: 0 0 auto; }
+    .budget.over { color: #d0342c; font-weight: 600; }
+    .dimmed { opacity: .45; pointer-events: none; }
+
     /* ---- segmented control (Picker .segmented) ---- */
     .seg {
       display: inline-flex; margin-left: auto;
@@ -322,10 +335,39 @@
           <div class="group">
             <div class="row"><span class="cap" id="modelSummary">Gemini Live 실시간 번역 모델</span></div>
             <div class="row"><span class="lbl">원문 자막</span><span class="val">지원</span></div>
-            <div class="row"><span class="lbl">번역 자막</span><span class="val">지원</span></div>
-            <div class="row"><span class="lbl">번역 오디오</span><span class="val">지원</span></div>
-            <div class="row"><span class="lbl">실시간 스트리밍</span><span class="val">지원</span></div>
-            <div class="row"><span class="lbl">API 키</span><span class="val">필요</span></div>
+            <div class="row"><span class="lbl">번역 오디오</span><span class="val" id="infoAudio">지원</span></div>
+            <div class="row"><span class="lbl">화자 구분</span><span class="val" id="infoSpeaker">추정 (소리가 쉬는 간격으로 판단)</span></div>
+            <div class="row"><span class="lbl">말한 언어 표시</span><span class="val" id="infoLang">없음</span></div>
+            <div class="row"><span class="lbl">용어집</span><span class="val" id="infoGlossary">없음</span></div>
+            <div class="row"><span class="lbl">요금 (1시간 기준)</span><span class="val" id="infoPrice">약 2.2달러</span></div>
+            <div class="row"><span class="lbl">API 키</span><span class="val" id="infoKey">Gemini 키 필요</span></div>
+          </div>
+        </div>
+        <div class="section" id="secSoniox">
+          <div class="sectitle">회의 언어</div>
+          <div class="group">
+            <div class="row"><span class="lbl">나올 언어</span><input type="text" id="inSxHints" placeholder="예: it, en, ko" autocomplete="off" /></div>
+            <div class="row"><span class="cap">회의에서 쓰는 언어의 코드를 쉼표로 나눠 적습니다(이탈리아어 it, 영어 en, 한국어 ko). 적은 언어를 우선해서 알아듣고, 비워 두면 언어를 스스로 판별합니다.</span></div>
+          </div>
+        </div>
+        <div class="section" id="secGlossary">
+          <div class="sectitle">용어집</div>
+          <div class="group">
+            <div class="row"><span class="cap">회의에서 자주 나오는 이름과 용어를 미리 알려 주면 받아쓰기와 번역이 정확해집니다. 번역 중에 바꾸면 곧바로 다시 연결해 반영합니다.</span></div>
+            <div class="row col">
+              <div class="line"><span class="lbl">회의 설명</span></div>
+              <textarea id="taSxContext" rows="3" placeholder="예: Telecom Italia와 셋톱박스·앱 개발 일정을 맞추는 회의입니다. 존댓말로 번역해 주세요."></textarea>
+            </div>
+            <div class="row col">
+              <div class="line"><span class="lbl">알아들어야 할 단어</span><span class="val">한 줄에 하나</span></div>
+              <textarea id="taSxTerms" rows="5" placeholder="ZTE&#10;Canal+&#10;SDK&#10;Michele Galattini"></textarea>
+            </div>
+            <div class="row col">
+              <div class="line"><span class="lbl">정해 둔 번역</span><span class="val">원문 → 번역</span></div>
+              <div class="pairs" id="sxPairs"></div>
+              <div class="line"><button class="btn" id="btnAddPair">줄 추가</button></div>
+            </div>
+            <div class="row"><span class="cap budget" id="sxBudget"></span></div>
           </div>
         </div>
         <div class="section">
@@ -334,10 +376,10 @@
             <div class="row"><span class="lbl">VAD 방식</span>
               <div class="seg" id="segVad">
                 <button data-val="client">클라이언트(Silero)</button>
-                <button data-val="server">서버(Gemini 자동)</button>
+                <button data-val="server">서버(엔진 자동)</button>
               </div>
             </div>
-            <div class="row"><span class="cap">클라이언트: 음악/무음을 걸러 비용 절감, 소음에 강함. 서버: 연속 전송으로 Gemini가 발화를 감지(무음도 과금). 초기 반복이 심하면 서버 방식을 시도해 보세요.</span></div>
+            <div class="row"><span class="cap">클라이언트: 음악/무음을 걸러 비용 절감, 소음에 강함. 서버: 소리를 계속 보내 번역 엔진이 발화를 감지(무음도 과금). 초기 반복이 심하면 서버 방식을 시도해 보세요.</span></div>
             <div class="row"><span class="lbl">모델 상태</span><span class="val" id="vadStatus">클라이언트 게이트 사용</span></div>
           </div>
         </div>
@@ -463,7 +505,8 @@
 
         <div class="section">
           <div class="sectitle">자막을 끊는 기준</div>
-          <div class="group">
+          <div class="row hidden" id="rowEngineSxNote" style="padding:0 2px 8px"><span class="cap">Soniox는 실제로 말한 사람을 구분하므로, 사람이 바뀔 때 새 줄에서 다른 색으로 시작합니다. 아래 기준은 Gemini를 쓸 때만 적용됩니다.</span></div>
+          <div class="group" id="grpEngineCut">
             <div class="row"><span class="cap">말이 어디서 끝났는지 판단해 자막을 새 줄로 넘기는 기준입니다. 자막이 문장 중간에서 자꾸 끊기면 아래 값을 길게, 여러 사람의 말이 한 줄에 뭉치면 짧게 맞추세요.</span></div>
             <div class="row"><span class="lbl">쓰는 상황</span><span class="spacer"></span>
               <div class="seg" id="segEnginePreset">
@@ -505,6 +548,7 @@
               <label class="sw"><input type="checkbox" id="tgPlayback" /><span class="track"></span></label></div>
             <div class="row" id="rowOutput"><span class="lbl">출력 장치</span><select id="selOutput"></select></div>
             <div class="row" id="rowOutputRefresh"><button class="btn" id="btnRefreshOutput">출력 장치 새로고침</button></div>
+            <div class="row hidden" id="rowPlaybackSxCap"><span class="cap">Soniox는 번역을 글자로만 돌려주어 번역 오디오를 재생할 수 없습니다. 번역 오디오가 필요하면 모델에서 Gemini를 고르세요.</span></div>
             <div class="row" id="rowPlaybackOffCap"><span class="cap">번역 오디오 재생을 켜야 아래 볼륨/덕킹이 적용됩니다.</span></div>
             <div class="row col">
               <div class="line"><span class="lbl">번역 볼륨</span><span class="val" id="lblTransVol">100%</span></div>
@@ -598,7 +642,7 @@
       <!-- ============ API 키 ============ -->
       <div class="panel" data-cat="apiKey">
         <div class="section">
-          <div class="sectitle">API 키</div>
+          <div class="sectitle">Gemini API 키</div>
           <div class="group">
             <div class="row"><span class="lbl">현재</span><span class="val" id="keySource">확인 중…</span></div>
             <div class="row"><input type="password" id="inKey" placeholder="Gemini API 키 입력" autocomplete="off" /></div>
@@ -612,6 +656,22 @@
             <div class="row" id="rowKeyMsg"><span class="cap" id="keyMsg"></span></div>
             <div class="row"><span class="cap">키를 입력하고 먼저 연결 테스트에 성공해야 저장할 수 있습니다. 입력칸을 비운 채 연결 테스트를 누르면 이미 저장된 키가 잘 동작하는지 확인합니다.</span></div>
             <div class="row"><span class="cap">보안을 위해 키 값은 표시하지 않습니다. 저장된 키는 OS 자격증명 저장소(Keychain 등)에 보관됩니다.</span></div>
+          </div>
+        </div>
+        <div class="section">
+          <div class="sectitle">Soniox API 키</div>
+          <div class="group">
+            <div class="row"><span class="lbl">현재</span><span class="val" id="keySourceSx">확인 중…</span></div>
+            <div class="row"><input type="password" id="inKeySx" placeholder="Soniox API 키 입력" autocomplete="off" /></div>
+            <div class="row">
+              <button class="btn" id="btnTestKeySx">연결 테스트</button>
+              <button class="btn" id="btnSaveKeySx">저장</button>
+              <span class="spacer"></span>
+              <button class="btn destructive" id="btnDeleteKeySx">삭제</button>
+            </div>
+            <div class="row hidden" id="rowTestStatusSx"><span class="status" id="testStatusSx"></span></div>
+            <div class="row"><span class="cap" id="keyMsgSx"></span></div>
+            <div class="row"><span class="cap">모델에서 Soniox를 고를 때 쓰는 키입니다. Soniox 콘솔(console.soniox.com)에서 발급합니다. 저장 방식과 연결 테스트 규칙은 Gemini 키와 같습니다.</span></div>
           </div>
         </div>
       </div>
@@ -754,10 +814,187 @@
         try { models = (a && await a.Models()) || []; } catch (_) {}
         const opts = models.map(m => [m.id || m.ID, m.name || m.Name || m.id]);
         if (!opts.length) opts.push(["gemini","Gemini Live Translate"]);
-        fillSelect($("selModel"), opts, opts[0][0]);
-        // 모델 요약(원본 model.summary 대체 — 백엔드 Models()에는 summary/capabilities 없음).
-        if (models[0]) $("modelSummary").textContent =
-          (models[0].name || "Gemini Live") + " · 실시간 스트리밍 번역 (엔진: " + (models[0].engine || "geminiLive") + ")";
+        fillSelect($("selModel"), opts, currentEngine());
+      }
+
+      // ---- 번역 엔진(Gemini / Soniox) ----
+      function currentEngine() {
+        return (S && S.model && S.model.engine === "soniox") ? "soniox" : "gemini";
+      }
+      const ENGINE_INFO = {
+        gemini: {
+          summary: "Gemini 3.5 Live Translate · 말을 듣고 번역 음성과 자막을 함께 만듭니다.",
+          audio: "지원", speaker: "추정 (소리가 쉬는 간격으로 판단)", lang: "없음",
+          glossary: "없음", price: "약 2.2달러", key: "Gemini 키 필요",
+        },
+        soniox: {
+          summary: "Soniox 실시간 번역 · 받아쓰기와 번역을 글자로 돌려줍니다. 말한 사람과 언어를 구분하고 용어집을 씁니다.",
+          audio: "없음 (자막만)", speaker: "실제 화자 구분", lang: "원문 줄 앞에 표시 (예: 화자 2 · IT)",
+          glossary: "지원", price: "약 0.26달러", key: "Soniox 키 필요",
+        },
+      };
+      // 엔진에 따라 바뀌는 화면 요소를 한 곳에서 맞춘다.
+      function renderEngineUI() {
+        const e = currentEngine(), info = ENGINE_INFO[e], sx = e === "soniox";
+        $("modelSummary").textContent = info.summary;
+        $("infoAudio").textContent = info.audio;
+        $("infoSpeaker").textContent = info.speaker;
+        $("infoLang").textContent = info.lang;
+        $("infoGlossary").textContent = info.glossary;
+        $("infoPrice").textContent = info.price;
+        $("infoKey").textContent = info.key;
+        $("secSoniox").classList.toggle("hidden", !sx);
+        $("secGlossary").classList.toggle("hidden", !sx);
+        $("rowEngineSxNote").classList.toggle("hidden", !sx);
+        $("grpEngineCut").classList.toggle("dimmed", sx);
+        $("tgPlayback").disabled = sx;
+        $("rowPlaybackSxCap").classList.toggle("hidden", !sx);
+      }
+
+      // ---- Soniox 용어집 ----
+      // Soniox는 회의 설명·단어·정해 둔 번역을 합쳐 약 8,000토큰까지 받는다. 정확한 토큰 수는
+      // 서버만 알기 때문에 넉넉하게 어림한다(영문·숫자 4자에 1토큰, 그 밖의 글자 1자에 1토큰,
+      // 항목마다 구분 기호 몫 3토큰).
+      const SX_TOKEN_LIMIT = 8000;
+      function estimateTokens(str) {
+        let ascii = 0, other = 0;
+        for (const ch of str) { if (ch.charCodeAt(0) < 128) ascii++; else other++; }
+        return Math.ceil(ascii / 4) + other;
+      }
+      function sxListFrom(text) {
+        const seen = new Set(), out = [];
+        for (const raw of text.split(/\r?\n/)) {
+          const v = raw.trim();
+          if (v && !seen.has(v)) { seen.add(v); out.push(v); }
+        }
+        return out;
+      }
+      function sxPairsFromDom() {
+        const out = [];
+        document.querySelectorAll("#sxPairs .pair").forEach(row => {
+          const [a, b] = row.querySelectorAll("input");
+          const src = a.value.trim(), tgt = b.value.trim();
+          if (src || tgt) out.push({ source: src, target: tgt });
+        });
+        return out;
+      }
+      function addPairRow(src, tgt) {
+        const row = document.createElement("div");
+        row.className = "pair";
+        const a = document.createElement("input"); a.type = "text"; a.placeholder = "원문 (예: sotto box)"; a.value = src || "";
+        const arrow = document.createElement("span"); arrow.className = "arrow"; arrow.textContent = "→";
+        const b = document.createElement("input"); b.type = "text"; b.placeholder = "번역 (예: 셋톱박스)"; b.value = tgt || "";
+        const del = document.createElement("button"); del.className = "btn"; del.textContent = "삭제";
+        a.addEventListener("input", saveSoniox); b.addEventListener("input", saveSoniox);
+        del.addEventListener("click", () => { row.remove(); saveSoniox(); });
+        row.append(a, arrow, b, del);
+        $("sxPairs").appendChild(row);
+        return a;
+      }
+      function loadSoniox() {
+        // 설정 창이 다시 읽을 때(트레이·창 이동 등으로 파일이 바뀐 경우) 입력 중인 용어집을
+        // 덮어쓰지 않는다.
+        const act = document.activeElement;
+        if (act && (act.closest("#secGlossary") || act.closest("#secSoniox"))) return;
+        const sx = (S && S.soniox) || {};
+        $("inSxHints").value = (sx.languageHints || []).join(", ");
+        $("taSxContext").value = sx.context || "";
+        $("taSxTerms").value = (sx.terms || []).join("\n");
+        $("sxPairs").innerHTML = "";
+        for (const t of (sx.translationTerms || [])) addPairRow(t.source, t.target);
+        renderSxBudget(sx);
+      }
+      function sxTokens(sx) {
+        let n = estimateTokens(sx.context || "");
+        for (const t of (sx.terms || [])) n += estimateTokens(t) + 3;
+        for (const p of (sx.translationTerms || [])) n += estimateTokens(p.source) + estimateTokens(p.target) + 6;
+        return n;
+      }
+      function renderSxBudget(sx, blocked) {
+        const n = sxTokens(sx);
+        const el = $("sxBudget");
+        el.textContent = "용어집 크기: 약 " + n.toLocaleString() + " / " + SX_TOKEN_LIMIT.toLocaleString() + " 토큰" +
+          (n > SX_TOKEN_LIMIT ? " — 한도를 넘어 저장하지 않았습니다. 설명이나 단어를 줄여 주세요." : "");
+        el.classList.toggle("over", n > SX_TOKEN_LIMIT || !!blocked);
+      }
+      // 입력이 바뀔 때마다 후보를 만들고, 한도 안이면 저장한다(한도를 넘으면 이전 값을 유지).
+      function saveSoniox() {
+        if (!S) return;
+        const cand = {
+          languageHints: $("inSxHints").value.split(/[,\s]+/).map(v => v.trim().toLowerCase()).filter(Boolean),
+          context: $("taSxContext").value,
+          terms: sxListFrom($("taSxTerms").value),
+          translationTerms: sxPairsFromDom().filter(p => p.source && p.target),
+        };
+        renderSxBudget(cand);
+        if (sxTokens(cand) > SX_TOKEN_LIMIT) return;
+        S.soniox = cand;
+        commit();
+      }
+
+      // ---- Soniox API 키 ----
+      let sxKeyLabel = "없음", sxTestState = "idle", sxTestedStored = false, sxTestMsg = "";
+      function renderSxKey() {
+        const st = $("testStatusSx");
+        if (sxTestState === "testing") st.innerHTML = '<span class="spin"></span><span class="sec">테스트 중…</span>';
+        else if (sxTestState === "success") st.innerHTML = '<span class="dot green"></span><span class="green">' + (sxTestedStored ? "저장된 키로 연결됨" : "연결됨") + '</span>';
+        else if (sxTestState === "failure") { st.innerHTML = '<span class="dot red"></span><span class="red"></span>'; st.lastChild.textContent = "연결 실패: " + sxTestMsg; }
+        else st.innerHTML = "";
+        $("rowTestStatusSx").classList.toggle("hidden", sxTestState === "idle");
+        const hasInput = $("inKeySx").value.trim().length > 0;
+        $("btnTestKeySx").disabled = (!hasInput && sxKeyLabel === "없음") || sxTestState === "testing";
+        $("btnSaveKeySx").disabled = !hasInput || sxTestState !== "success" || sxTestedStored;
+        $("btnDeleteKeySx").disabled = sxKeyLabel !== "키체인";
+      }
+      async function refreshKeyStateSx() {
+        const a = api(); if (!a || !a.EngineKeySourceLabel) return;
+        try { sxKeyLabel = await a.EngineKeySourceLabel("soniox"); } catch (_) { sxKeyLabel = "없음"; }
+        const el = $("keySourceSx");
+        el.textContent = sxKeyLabel === "없음" ? "키 없음 — 키를 입력하세요"
+                       : sxKeyLabel === "환경변수" ? "환경변수 키 사용 중" : "저장된 키 사용 중";
+        el.className = "val " + (sxKeyLabel !== "없음" ? "green" : "sec");
+        renderSxKey();
+      }
+      function wireSoniox() {
+        $("selModel").addEventListener("change", () => {
+          if (!S) return;
+          if (!S.model) S.model = {};
+          S.model.engine = $("selModel").value === "soniox" ? "soniox" : "gemini";
+          renderEngineUI();
+          commit();
+        });
+        $("inSxHints").addEventListener("input", saveSoniox);
+        $("taSxContext").addEventListener("input", saveSoniox);
+        $("taSxTerms").addEventListener("input", saveSoniox);
+        $("btnAddPair").addEventListener("click", () => { addPairRow("", "").focus(); });
+
+        $("inKeySx").addEventListener("input", () => { sxTestState = "idle"; sxTestedStored = false; $("keyMsgSx").textContent = ""; renderSxKey(); });
+        $("btnTestKeySx").addEventListener("click", async () => {
+          const a = api(); if (!a) return;
+          sxTestedStored = $("inKeySx").value.trim() === "";
+          sxTestState = "testing"; renderSxKey();
+          try {
+            const msg = await a.TestEngineAPIKey("soniox", $("inKeySx").value);
+            if (!msg) sxTestState = "success"; else { sxTestState = "failure"; sxTestMsg = msg; }
+          } catch (e) { sxTestState = "failure"; sxTestMsg = String(e); }
+          renderSxKey();
+        });
+        $("btnSaveKeySx").addEventListener("click", async () => {
+          const a = api(); if (!a) return;
+          try {
+            await a.SaveEngineAPIKey("soniox", $("inKeySx").value);
+            $("inKeySx").value = ""; $("keyMsgSx").textContent = "키를 저장했습니다.";
+            sxTestState = "idle"; await refreshKeyStateSx();
+          } catch (e) { $("keyMsgSx").textContent = "키 저장에 실패했습니다."; }
+        });
+        $("btnDeleteKeySx").addEventListener("click", async () => {
+          const a = api(); if (!a) return;
+          try {
+            await a.SaveEngineAPIKey("soniox", "");
+            $("inKeySx").value = ""; $("keyMsgSx").textContent = "저장된 키를 삭제했습니다.";
+            sxTestState = "idle"; await refreshKeyStateSx();
+          } catch (e) { $("keyMsgSx").textContent = "키 삭제에 실패했습니다."; }
+        });
       }
 
       async function populateInput() {
@@ -1097,6 +1334,7 @@
 
         // 모델
         await populateModels();
+        loadSoniox();
         setSeg("segVad", (S.vad && S.vad.enabled) ? "client" : "server");
         $("vadStatus").textContent = (S.vad && S.vad.enabled) ? "클라이언트 게이트 사용" : "서버 VAD 사용 중";
 
@@ -1121,6 +1359,7 @@
         // 오디오
         await populateOutput();
         updateAudioRows();
+        renderEngineUI();
         $("rngTransVol").value = (S.audio && S.audio.softVolume != null) ? S.audio.softVolume : 1;
         $("lblTransVol").textContent = Math.round(($("rngTransVol").value)*100) + "%";
         $("tgDuck").checked = !!(S.audio && S.audio.duckEnabled);
@@ -1141,6 +1380,7 @@
 
         // API 키
         await refreshKeyState();
+        await refreshKeyStateSx();
         renderTestStatus();
 
         // 권한
@@ -1188,7 +1428,7 @@
 
       function wire() {
         // 모델
-        $("selModel").addEventListener("change", () => { /* Models() 단일 — 백엔드 selectedModel 필드 없음 */ });
+        wireSoniox();
         wireSeg("segVad", (v) => {
           if (!S.vad) S.vad = { enabled: false };
           S.vad.enabled = (v === "client");

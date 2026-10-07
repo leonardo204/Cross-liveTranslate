@@ -203,6 +203,39 @@ func (s *SettingsAPI) KeySourceLabel() string {
 	return "없음"
 }
 
+// SaveEngineAPIKey stores (빈 값이면 삭제) the API key of the given engine
+// ("gemini" | "soniox"). 저장 후 controller 에 reload 신호를 보내 바로 쓰이게 한다.
+func (s *SettingsAPI) SaveEngineAPIKey(engine, key string) error {
+	if err := config.SaveEngineAPIKey(engine, key); err != nil {
+		return err
+	}
+	s.notifyChanged()
+	return nil
+}
+
+// TestEngineAPIKey verifies the engine's key. 입력칸이 비면 저장된 키로 검사한다(TestAPIKey 와
+// 같은 규칙). 성공이면 "", 실패면 사용자에게 보여 줄 문장(키 비포함)을 돌려준다.
+func (s *SettingsAPI) TestEngineAPIKey(engine, key string) string {
+	if strings.TrimSpace(key) == "" {
+		stored, err := config.EngineAPIKey(engine)
+		if err != nil || strings.TrimSpace(stored) == "" {
+			return "저장된 키가 없습니다. 키를 입력한 뒤 다시 시도하세요"
+		}
+		key = stored
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	if err := config.TestEngineAPIKey(ctx, engine, key); err != nil {
+		return err.Error()
+	}
+	return ""
+}
+
+// EngineKeySourceLabel returns 환경변수 | 키체인 | 없음 for the engine's key.
+func (s *SettingsAPI) EngineKeySourceLabel(engine string) string {
+	return config.EngineKeySource(engine)
+}
+
 // -----------------------------------------------------------------------------
 // Devices / models / permissions / version (U3 폼이 사용하는 계약)
 // -----------------------------------------------------------------------------
@@ -252,10 +285,16 @@ func (s *SettingsAPI) OpenSystemSettings(pane string) {
 func (s *SettingsAPI) Models() []ModelInfo {
 	return []ModelInfo{
 		{
-			ID:              "gemini-3.5-live-translate",
+			ID:              config.EngineGemini,
 			Name:            "Gemini 3.5 Live Translate",
 			Engine:          "geminiLive",
 			ModelIdentifier: config.GeminiModel,
+		},
+		{
+			ID:              config.EngineSoniox,
+			Name:            "Soniox 실시간 번역",
+			Engine:          "soniox",
+			ModelIdentifier: "stt-rt-v5",
 		},
 	}
 }

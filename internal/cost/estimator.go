@@ -35,6 +35,11 @@ const (
 	AudioTokensPerSecond = 25.0
 	// sampleRate is the 16kHz mono 송신 샘플레이트(입력 시간 환산용).
 	sampleRate = 16000.0
+
+	// Soniox 단가(공식 가격표, 2026-10 확인): 실시간 입력 오디오 시간당 0.12달러(백만 토큰당
+	// 2.00달러), 텍스트 출력 백만 토큰당 4.00달러. 번역은 따로 과금하지 않는다.
+	SonioxInputUSDPerHour            = 0.12
+	SonioxOutputTextUSDPerMillionTok = 4.00
 )
 
 // Estimator accumulates session and cumulative translation cost in USD.
@@ -45,6 +50,10 @@ type Estimator struct {
 	// 세션 원시값(원본과 동일하게 초/토큰을 보존해 결정적으로 USD를 파생).
 	sessionSentSeconds  float64
 	sessionOutputTokens int
+	sessionTextTokens   int
+
+	// soniox 면 Soniox 단가로 계산한다(SetEngine). 기본은 Gemini 단가.
+	soniox bool
 
 	// 누적 총 비용(USD). 시작 시 Settings.Cost.CumulativeUSD로 시드된다.
 	cumulativeUSD float64
@@ -58,12 +67,18 @@ func New(seedCumulativeUSD float64) *Estimator {
 
 // sessionInputUSD returns the 세션 입력 비용(USD). 호출자는 mu를 보유한다.
 func (e *Estimator) sessionInputUSD() float64 {
+	if e.soniox {
+		return e.sessionSentSeconds / 3600.0 * SonioxInputUSDPerHour
+	}
 	tokens := e.sessionSentSeconds * AudioTokensPerSecond
 	return tokens / 1_000_000.0 * InputUSDPerMillionTokens
 }
 
 // sessionOutputUSD returns the 세션 출력 비용(USD). 호출자는 mu를 보유한다.
 func (e *Estimator) sessionOutputUSD() float64 {
+	if e.soniox {
+		return float64(e.sessionTextTokens) / 1_000_000.0 * SonioxOutputTextUSDPerMillionTok
+	}
 	return float64(e.sessionOutputTokens) / 1_000_000.0 * OutputUSDPerMillionTokens
 }
 
@@ -97,11 +112,33 @@ func (e *Estimator) AddOutputTokens(tokens int) {
 	}
 }
 
+// SetEngine selects the 단가표: soniox=true면 Soniox, 아니면 Gemini. 세션 시작 직전에 부른다.
+func (e *Estimator) SetEngine(soniox bool) {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	e.soniox = soniox
+}
+
+// AddOutputTextTokens accumulates 텍스트 출력 토큰(Soniox) 비용.
+func (e *Estimator) AddOutputTextTokens(tokens int) {
+	if tokens <= 0 {
+		return
+	}
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	before := e.sessionOutputUSD()
+	e.sessionTextTokens += tokens
+	if delta := e.sessionOutputUSD() - before; delta > 0 {
+		e.cumulativeUSD += delta
+	}
+}
+
 // Add folds a Usage event into both input(SentSamples) and output(OutputAudioTokens)
 // cost. 서버 Usage 이벤트는 출력 토큰만 채우고, 입력 샘플은 controller가 송신 계량으로 채운다.
 func (e *Estimator) Add(u pipeline.UsageInfo) {
 	e.AddSentSamples(u.SentSamples)
 	e.AddOutputTokens(u.OutputAudioTokens)
+	e.AddOutputTextTokens(u.OutputTextTokens)
 }
 
 // Session returns the current session cost (입력 + 출력) in USD.
@@ -138,4 +175,5 @@ func (e *Estimator) ResetSession() {
 	defer e.mu.Unlock()
 	e.sessionSentSeconds = 0
 	e.sessionOutputTokens = 0
+	e.sessionTextTokens = 0
 }

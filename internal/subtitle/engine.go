@@ -83,6 +83,12 @@ type Line struct {
 	// 렌더러가 "번역문 → 원문" 순서로 바로 아래에 덧붙여 그린다. 확정된 줄은 확정
 	// 시점의 원문 스냅샷을 그대로 들고 있어, 줄이 화면에 남아 있는 동안 원문도 함께 남는다.
 	Source string
+	// Label 은 실제 화자·언어 표시다(예: "화자 2 · IT"). 화자 구분 엔진(Soniox)일 때만 채운다.
+	Label string
+	// Tail 은 아직 확정되지 않은 번역 꼬리다. 렌더러가 Text 뒤에 흐리게 붙여 그린다.
+	Tail string
+	// SourceTail 은 아직 확정되지 않은 원문 꼬리다. 렌더러가 Source 뒤에 흐리게 붙여 그린다.
+	SourceTail string
 }
 
 // Engine 은 결정적 자막 상태 머신이다. 시간은 Heartbeat(now)로만 주입되며 내부에서
@@ -115,6 +121,19 @@ type Engine struct {
 	// OnConfirmedLine 은 실제 roll-up push가 일어난 경우에만 호출된다(중복 무시 시 호출 안 함).
 	// 녹화 등 부가 기능이 확정 자막을 소비할 수 있다. source는 비어 있을 수 있다.
 	OnConfirmedLine func(source, translation string)
+
+	// OnConfirmedLabeledLine 은 OnConfirmedLine 과 같지만 화자·언어 표시(label)를 함께 받는다.
+	// 설정돼 있으면 OnConfirmedLine 대신 호출된다(녹화 파일에 화자를 남기기 위함).
+	OnConfirmedLabeledLine func(label, source, translation string)
+
+	// ExactDeltas 는 델타를 겹침 제거 없이 그대로 이어 붙인다(Soniox처럼 토큰을 한 번씩만
+	// 보내는 엔진용). 기본 머지는 "앞 버퍼 끝과 겹치는 글자"를 지우는데, 토큰 단위 텍스트에서는
+	// 진짜 글자를 지워 버린다.
+	ExactDeltas bool
+
+	// SpeakerDriven 은 실제 화자 번호로만 화자 색을 바꾼다(Soniox). 켜져 있으면 무음·물음표
+	// 같은 추정 경계는 줄을 확정만 하고 색은 바꾸지 않는다.
+	SpeakerDriven bool
 
 	// Logf 는 엔진의 판단 근거(확정 사유·화자 토글·턴 경계 도착 시점)를 밖으로 흘리는
 	// 진단 훅이다. nil이면 no-op — 엔진은 순수 상태머신이라 파일/전역 로거를 직접 쓰지 않고,
@@ -155,6 +174,17 @@ type Engine struct {
 	lastActivity time.Time // 마지막으로 활동이 관측된 heartbeat 시각.
 	hasActivity  bool      // lastActivity가 유효한지.
 	sawActivity  bool      // 마지막 heartbeat 이후 새 delta/segment가 있었는지.
+
+	// 실제 화자 상태(SpeakerDriven). speaker.go 참고.
+	lineSpeaker    string // 진행 중 줄의 화자 번호
+	lineLabel      string // 진행 중 줄의 화자·언어 표시
+	nextSource     string // 다음 화자의 원문(앞 화자의 번역이 끝나기 전에 도착한 것)
+	nextSpeaker    string
+	interim        string // 미확정 번역 꼬리
+	interimSpeaker string
+	srcInterim     string // 미확정 원문 꼬리
+	srcInterimSpk  string
+	nextLabel      string // 다음 화자의 표시(원문이 먼저 왔을 때)
 }
 
 // New 는 원본 기본 파라미터로 초기화한 엔진을 반환한다.
@@ -221,7 +251,7 @@ func (e *Engine) DisplayLines() []Line {
 	var out []Line
 	// add 는 한 덩어리(줄바꿈 포함 가능)를 표시 줄들로 쪼개 담는다. 원문은 그 덩어리의
 	// 마지막 표시 줄에만 붙여 "번역문 → 원문" 순서가 유지되게 한다.
-	add := func(text string, speaker int, source string) {
+	add := func(text string, speaker int, source, label string) {
 		parts := strings.Split(text, "\n")
 		last := -1
 		for i, ln := range parts {
@@ -233,28 +263,29 @@ func (e *Engine) DisplayLines() []Line {
 			if strings.TrimSpace(ln) == "" {
 				continue
 			}
-			src := ""
+			src, lb := "", ""
 			if i == last {
-				src = source
+				src, lb = source, label
 			}
-			out = append(out, Line{Text: ln, Speaker: e.speakerOf(speaker), Source: src})
+			out = append(out, Line{Text: ln, Speaker: e.speakerOf(speaker), Source: src, Label: lb})
 		}
 	}
 	if e.segmentMode {
 		keep := e.MaxLines + 2
 		for _, l := range suffixCopy(e.rollupLines, keep) {
-			add(l.Text, l.Speaker, l.Source)
+			add(l.Text, l.Speaker, l.Source, l.Label)
 		}
-		if e.currentTranslation != "" {
-			add(e.currentTranslation, e.curSpeaker, e.currentSource)
+		hadCurrent := e.currentTranslation != ""
+		if hadCurrent {
+			add(e.currentTranslation, e.curSpeaker, e.currentSource, e.lineLabel)
 		}
-		return out
+		return e.appendPending(out, hadCurrent)
 	}
 	// 비세그먼트 폴백(미리보기 포함): 누적 중이면 누적분, 아니면 마지막 확정분 한 덩어리.
 	if e.currentTranslation == "" {
-		add(e.confirmedTranslation, e.curSpeaker, e.confirmedSource)
+		add(e.confirmedTranslation, e.curSpeaker, e.confirmedSource, "")
 	} else {
-		add(e.currentTranslation, e.curSpeaker, e.currentSource)
+		add(e.currentTranslation, e.curSpeaker, e.currentSource, "")
 	}
 	return out
 }
@@ -505,6 +536,7 @@ func (e *Engine) Reset() {
 	e.curSpeaker = 0 // 새 세션은 기본 색부터.
 	e.contentSinceBoundary = false
 	e.disarmHint()
+	e.resetSpeakerState()
 	e.lastActivity = time.Time{}
 	e.hasActivity = false
 	e.sawActivity = false
@@ -551,6 +583,7 @@ const (
 	reasonQuestion                          // 물음표 뒤 새 델타 — 질문→답변 전환 휴리스틱.
 	reasonGap                               // 델타 갭 ≥ TurnBoundarySilence(1.0s) — 백업 트리거.
 	reasonSilence                           // 무음 2초 fallback — 경계 트리거를 끈 경우의 폴백.
+	reasonSpeaker                           // 실제 화자 번호가 바뀜(Soniox 화자 구분).
 )
 
 // isTurnBoundary 는 이 사유가 턴(발화) 경계인지 보고한다(charBreak만 경계가 아니다).
@@ -566,6 +599,8 @@ func (r confirmReason) String() string {
 		return "turnBoundary-question"
 	case reasonGap:
 		return "turnBoundary-gap"
+	case reasonSpeaker:
+		return "turnBoundary-speaker"
 	case reasonSilence:
 		return "turnBoundary-silence"
 	default:
@@ -587,7 +622,10 @@ func (r confirmReason) String() string {
 // 화면·패리티에 반영된 것이므로 토글 없이 플래그만 내린다.
 func (e *Engine) confirmTurn(reason confirmReason) {
 	sourceSnapshot := e.currentSource
-	collapsed := strings.TrimSpace(dedupGlobalSentences(collapseRepeats(e.currentTranslation)))
+	collapsed := strings.TrimSpace(e.currentTranslation)
+	if !e.ExactDeltas {
+		collapsed = strings.TrimSpace(dedupGlobalSentences(collapseRepeats(e.currentTranslation)))
+	}
 	e.currentTranslation = ""
 	e.currentSource = ""
 
@@ -615,6 +653,13 @@ func (e *Engine) confirmTurn(reason confirmReason) {
 	toggled := false
 	skip := ""
 	switch {
+	case e.SpeakerDriven && reason == reasonSpeaker:
+		// 실제 화자가 바뀌었다 — 버퍼·중복과 무관하게 색을 넘긴다.
+		e.curSpeaker ^= 1
+		toggled = true
+		e.contentSinceBoundary = false
+	case e.SpeakerDriven:
+		skip = "화자 구분 모드(색은 실제 화자가 바뀔 때만)"
 	case !reason.isTurnBoundary():
 		skip = "charBreak(턴 경계 아님)"
 	case !e.contentSinceBoundary:
@@ -638,11 +683,13 @@ func (e *Engine) confirmTurn(reason confirmReason) {
 func (e *Engine) pushRollup(line, source string) {
 	// 확정 시점의 원문을 줄에 함께 보관한다. 확정하면서 currentSource 를 비우기 때문에,
 	// 이 스냅샷이 없으면 화면의 원문 줄만 먼저 사라진다(번역문은 roll-up 으로 남는다).
-	e.rollupLines = append(e.rollupLines, Line{Text: line, Speaker: e.curSpeaker, Source: source})
+	e.rollupLines = append(e.rollupLines, Line{Text: line, Speaker: e.curSpeaker, Source: source, Label: e.lineLabel})
 	if len(e.rollupLines) > e.MaxRollupHistory {
 		e.rollupLines = e.rollupLines[len(e.rollupLines)-e.MaxRollupHistory:]
 	}
-	if e.OnConfirmedLine != nil {
+	if e.OnConfirmedLabeledLine != nil {
+		e.OnConfirmedLabeledLine(e.lineLabel, source, line)
+	} else if e.OnConfirmedLine != nil {
 		e.OnConfirmedLine(source, line)
 	}
 }
@@ -657,6 +704,7 @@ func (e *Engine) clearScreen() {
 	e.curSpeaker = 0
 	e.contentSinceBoundary = false
 	e.disarmHint()
+	e.resetSpeakerState()
 }
 
 // applyPendingGenerationReset 은 generation 리셋이 대기 중이면 직전 generation의 누적을
@@ -702,6 +750,16 @@ func (e *Engine) effectiveMaxChars() int {
 //
 // 실질적으로 버퍼가 바뀌어 표시 갱신이 필요하면 true를 반환한다.
 func (e *Engine) appendIfMeaningful(delta string, buffer *string) bool {
+	if e.ExactDeltas {
+		if *buffer == "" {
+			delta = strings.TrimLeft(delta, " \t")
+		}
+		if delta == "" {
+			return false
+		}
+		*buffer += delta
+		return true
+	}
 	merged, ok := mergeDelta(*buffer, delta)
 	if !ok {
 		return false

@@ -82,6 +82,12 @@
       opacity: 0.85;
     }
 
+    /* 아직 확정되지 않은 번역 꼬리(Soniox) — 확정되면 진한 글씨로 바뀐다. */
+    .tail { opacity: 0.55; }
+
+    /* 원문 줄 앞의 화자·언어 표시(Soniox 화자 구분) — 예: "화자 2 · IT" */
+    .label { font-weight: 700; opacity: 0.75; margin-right: 0.5em; }
+
     /*
       알림 줄 — API 키 없음·권한 거부·연결 실패처럼 사용자가 조치해야 하는 상황을 알린다.
       번역문(흰색·큰 글씨)과 헷갈리지 않도록 주황색 작은 글씨로 그리고 왼쪽에 세로 막대를
@@ -273,6 +279,9 @@
         // 그린다. 없으면 구버전 메시지(source 한 줄)로 폴백해 맨 아래에 한 번만 그린다.
         const allSources = Array.isArray(p.sources) ? p.sources : null;
         const legacySource = typeof p.source === "string" ? p.source : "";
+        const allLabels = Array.isArray(p.labels) ? p.labels : [];
+        const allTails = Array.isArray(p.tails) ? p.tails : [];
+        const allSrcTails = Array.isArray(p.sourceTails) ? p.sourceTails : [];
 
         box.textContent = "";
 
@@ -295,14 +304,36 @@
           const el = document.createElement("div");
           el.className = "line";
           el.textContent = lines[i];
+          const tail = allTails[spOffset + i] || "";
+          if (tail) {
+            const t = document.createElement("span");
+            t.className = "tail";
+            t.textContent = tail;
+            el.appendChild(t);
+          }
           applyLineStyle(el, false, allSpeakers[spOffset + i] === 1 ? 1 : 0);
           box.appendChild(el);
 
+          // 원문 줄: 화자·언어 표시(있으면) + 원문(원문 동시 표시가 켜졌을 때).
           const src = allSources ? allSources[spOffset + i] : "";
-          if (src) {
+          const label = allLabels[spOffset + i] || "";
+          const srcTail = allSrcTails[spOffset + i] || "";
+          if (src || label || srcTail) {
             const sel = document.createElement("div");
             sel.className = "line source";
-            sel.textContent = src;
+            if (label) {
+              const lb = document.createElement("span");
+              lb.className = "label";
+              lb.textContent = label;
+              sel.appendChild(lb);
+            }
+            if (src) sel.appendChild(document.createTextNode(src));
+            if (srcTail) {
+              const st = document.createElement("span");
+              st.className = "tail";
+              st.textContent = srcTail;
+              sel.appendChild(st);
+            }
             applyLineStyle(sel, true, 0);
             box.appendChild(sel);
             drewSource = true;
@@ -335,6 +366,9 @@
           visible: !payload || payload.visible !== false,
           source: payload && typeof payload.source === "string" ? payload.source : "",
           notice: payload && typeof payload.notice === "string" ? payload.notice : "",
+          labels: payload && Array.isArray(payload.labels) ? payload.labels : [],
+          tails: payload && Array.isArray(payload.tails) ? payload.tails : [],
+          sourceTails: payload && Array.isArray(payload.sourceTails) ? payload.sourceTails : [],
         };
         render();
       }

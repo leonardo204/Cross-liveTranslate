@@ -29,6 +29,8 @@ type Epoch = uint64
 // provider must be hot-swapped. 값이 달라지면 reconciler가 provider만 안전 교체한다
 // (캡처는 유지). 원본 AppState.ProviderConfig 등가.
 type ProviderConfig struct {
+	// Engine 은 번역 엔진("gemini" | "soniox")이다. 바뀌면 provider 를 새로 만든다.
+	Engine         string
 	Model          string
 	TargetLanguage string
 	SourceLanguage string
@@ -38,6 +40,9 @@ type ProviderConfig struct {
 	// 때만 true → 서버가 24kHz PCM을 생성/전송하고 gemini client가 OutputAudio 이벤트를 방출한다.
 	// 값이 바뀌면 reconciler가 provider를 핫스왑한다(ProviderConfig 비교에 포함).
 	EmitOutputAudio bool
+	// EngineOptions 는 엔진 전용 설정(Soniox 용어집·언어 힌트)의 지문이다. 비교만 한다 —
+	// 값이 바뀌면 다음 연결부터 반영되도록 provider 를 핫스왑한다.
+	EngineOptions string
 }
 
 // Desired is the user intent (최신). SetDesired/SetRunning 등으로 갱신한다.

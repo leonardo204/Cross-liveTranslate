@@ -229,8 +229,8 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 		log.Println("[controller] settings load:", serr)
 	}
 
-	// API 키 1회 로드. 실패해도 HUD는 뜨고, Start() 시 오류를 표면화한다.
-	key, err := config.APIKey()
+	// API 키 1회 로드(고른 번역 엔진의 키). 실패해도 HUD는 뜨고, Start() 시 오류를 표면화한다.
+	key, err := config.EngineAPIKey(settings.Model.Engine)
 	c.mu.Lock()
 	c.apiKey, c.apiKeyErr = key, err
 	c.settings = settings
@@ -285,8 +285,15 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 
 	// 팩토리 주입: reconciler는 gemini/malgo에 직접 의존하지 않는다(headless와 동일).
 	newProvider := func(cfg app.ProviderConfig) (pipeline.Provider, error) {
+		c.mu.Lock()
+		key := c.apiKey
+		soniox := c.settings.Soniox
+		c.mu.Unlock()
+		if cfg.Engine == config.EngineSoniox {
+			return newSonioxProvider(key, cfg.TargetLanguage, soniox), nil
+		}
 		return gemini.NewProvider(gemini.Config{
-			APIKey:                    c.apiKey,
+			APIKey:                    key,
 			Model:                     cfg.Model,
 			TargetLanguage:            cfg.TargetLanguage,
 			SourceLanguage:            cfg.SourceLanguage,
@@ -542,18 +549,20 @@ func (c *Controller) reloadSettings() {
 		c.signalAutoUpdateReload()
 	}
 
+	// API 키가 설정 창에서 변경됐거나 엔진이 바뀌었을 수 있으므로 재조회한다(값은 노출하지 않음).
+	// 실행 중 엔진을 바꾸면 아래 핫스왑이 새 provider 를 만들기 때문에, 그보다 먼저 읽어야
+	// 새 엔진의 키로 연결한다.
+	key, kerr := config.EngineAPIKey(s.Model.Engine)
+	c.mu.Lock()
+	c.apiKey, c.apiKeyErr = key, kerr
+	c.mu.Unlock()
+
 	if running && c.r != nil {
 		c.r.SetProviderConfig(cfg)
 		c.r.SetSelection(sel)
 	}
 	c.applyAudioPolicy(audioCfg, running)
 	c.queueStyle()
-
-	// API 키가 설정 창에서 변경됐을 수 있으므로 재조회한다(값은 노출하지 않음).
-	key, kerr := config.APIKey()
-	c.mu.Lock()
-	c.apiKey, c.apiKeyErr = key, kerr
-	c.mu.Unlock()
 
 	c.emitHUD()
 	c.emitStatus()
@@ -591,11 +600,21 @@ func (c *Controller) runLoop() {
 	}
 	// 자막 확정 줄을 녹화기로 흘린다(A Wave3). recorder가 닫혀 있으면 WriteLine은 무시된다.
 	// OnConfirmedLine은 이 goroutine(runLoop)에서 호출되고 recorder는 자체 mutex를 가진다.
-	eng.OnConfirmedLine = func(source, translation string) {
-		if c.recorder != nil {
-			c.recorder.WriteLine(time.Now(), source, translation)
+	eng.OnConfirmedLabeledLine = func(label, source, translation string) {
+		if c.recorder == nil {
+			return
 		}
+		// 화자 구분 엔진이면 누가 어느 언어로 말했는지도 남긴다: [화자 2 · IT] 원문 → 번역.
+		if label != "" {
+			if strings.TrimSpace(source) != "" {
+				source = "[" + label + "] " + source
+			} else {
+				translation = "[" + label + "] " + translation
+			}
+		}
+		c.recorder.WriteLine(time.Now(), source, translation)
 	}
+	c.applyEngineMode(eng)
 
 	ticker := time.NewTicker(250 * time.Millisecond)
 	defer ticker.Stop()
@@ -655,8 +674,7 @@ func (c *Controller) runLoop() {
 		case now := <-ticker.C:
 			// 설정 변경(숨은 설정 engine.turnBoundarySilenceMs)을 재시작 없이 반영한다.
 			// eng는 이 goroutine 단독 소유라 경합이 없다.
-			eng.TurnBoundarySilence = c.turnBoundarySilence()
-			eng.QuestionBoundary = c.wantQuestionBoundary()
+			c.applyEngineMode(eng)
 			eng.Heartbeat(now)
 			// 알림 만료 — 시간이 지나면 스스로 사라진다(사용자가 지울 수단이 없으므로).
 			if notice != "" && now.After(noticeUntil) {
@@ -833,11 +851,25 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 		// 오디오 도메인에서 잡은 화자 경계를 **이 델타를 넣기 직전에** 적용한다. 번역 지연
 		// 때문에 경계 직후 첫 델타가 도착할 즈음엔 이전 발화 번역이 대개 끝나 있어, 새 발화
 		// 텍스트가 새 줄·새 색으로 시작한다. 래치는 소비 즉시 clear(Swap)한다.
+		if ev.Speaker != "" {
+			// 실제 화자 번호가 있는 엔진(Soniox): 무음 추정 경계는 쓰지 않는다.
+			c.boundaryPending.Store(false)
+			eng.IngestSpeakerTranslation(ev.Text, ev.Speaker, speakerLabel(ev.Speaker, ev.Lang))
+			break
+		}
 		if c.boundaryPending.Swap(false) {
 			eng.TurnBoundaryHint()
 		}
 		eng.IngestTranslatedDelta(ev.Text)
+	case pipeline.TranslatedInterim:
+		eng.SetInterim(ev.Text, ev.Speaker)
+	case pipeline.SourceInterim:
+		eng.SetSourceInterim(ev.Text, ev.Speaker, speakerLabel(ev.Speaker, ev.Lang))
 	case pipeline.SourceDelta:
+		if ev.Speaker != "" {
+			eng.IngestSpeakerSource(ev.Text, ev.Speaker, speakerLabel(ev.Speaker, ev.Lang))
+			break
+		}
 		eng.IngestSourceDelta(ev.Text)
 	case pipeline.TurnComplete:
 		eng.TurnComplete()
@@ -902,6 +934,7 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 		// 입력 비용은 송신 계량(accountInputCost)이 담당한다.
 		if c.estimator != nil && ev.Usage != nil {
 			c.estimator.AddOutputTokens(ev.Usage.OutputAudioTokens)
+			c.estimator.AddOutputTextTokens(ev.Usage.OutputTextTokens)
 			c.emitCost()
 		}
 	}
@@ -910,12 +943,17 @@ func (c *Controller) applyEvent(eng *subtitle.Engine, ev pipeline.Event) {
 // providerConfigLocked builds the current provider config from controller state.
 // 호출자는 c.mu를 보유해야 한다. EmitOutputAudio는 번역 음성 재생 여부를 반영한다(A3).
 func (c *Controller) providerConfigLocked() app.ProviderConfig {
+	engine := config.NormalizeEngine(c.settings.Model.Engine)
 	return app.ProviderConfig{
-		Model:           c.model,
-		TargetLanguage:  c.target,
-		SourceLanguage:  c.source,
-		ShowSource:      c.showSource,
-		EmitOutputAudio: c.settings.Audio.PlaybackEnabled,
+		Engine:         engine,
+		Model:          c.model,
+		TargetLanguage: c.target,
+		SourceLanguage: c.source,
+		ShowSource:     c.showSource,
+		// Soniox는 번역 음성을 만들지 않는다 — 재생 설정과 무관하게 끈다.
+		EmitOutputAudio: c.settings.Audio.PlaybackEnabled && engine == config.EngineGemini,
+		// 용어집·언어 힌트가 바뀌면 연결을 새로 맺어야 반영된다(비교 키로 쓴다).
+		EngineOptions: sonioxFingerprint(engine, c.settings.Soniox),
 	}
 }
 
@@ -938,7 +976,10 @@ func (c *Controller) applyAudioPolicy(a config.AudioSettings, running bool) {
 	if c.player == nil || c.ducker == nil {
 		return
 	}
-	if !(a.PlaybackEnabled && running) {
+	c.mu.Lock()
+	soniox := config.NormalizeEngine(c.settings.Model.Engine) == config.EngineSoniox
+	c.mu.Unlock()
+	if !(a.PlaybackEnabled && running) || soniox {
 		_ = c.player.Stop()
 		c.ducker.Restore()
 		return
@@ -1319,7 +1360,7 @@ func (c *Controller) Start() error {
 		c.mu.Unlock()
 		// 키 없이 '시작'을 누르면 지금까지 아무 반응이 없었다(제어 HUD 프론트가 반환값을
 		// 버린다). 화면 위 알림으로 무엇이 없는지 알린다.
-		c.notify(noticeNoAPIKey)
+		c.notify(noticeNoAPIKeyFor(c.engineSnapshot()))
 		c.emitStatus()
 		return err
 	}
@@ -1370,6 +1411,7 @@ func (c *Controller) Start() error {
 	c.notifySettingsRunning(true)
 	// 비용(A Wave3): 새 세션이므로 세션 비용을 0에서 시작한다(누적은 유지). HUD를 즉시 갱신.
 	if c.estimator != nil {
+		c.estimator.SetEngine(c.engineSnapshot() == config.EngineSoniox)
 		c.estimator.ResetSession()
 		c.emitCost()
 	}
@@ -1551,7 +1593,10 @@ func (c *Controller) SaveAPIKey(key string) error {
 	if err := config.SaveAPIKey(key); err != nil {
 		return err
 	}
-	newKey, err := config.APIKey()
+	c.mu.Lock()
+	engine := c.settings.Model.Engine
+	c.mu.Unlock()
+	newKey, err := config.EngineAPIKey(engine)
 	c.mu.Lock()
 	c.apiKey, c.apiKeyErr = newKey, err
 	c.mu.Unlock()
@@ -1990,7 +2035,7 @@ func activeSourceLabel(sel audio.Selection) string {
 // geminiStatus 문구(제어 HUD 하단 "번역: <상태>"에 쓰인다).
 func geminiStatusText(status string, keyLoaded bool) string {
 	if !keyLoaded {
-		return "API 키 없음 — 설정에서 Gemini API 키를 입력하세요"
+		return "API 키 없음 — 설정에서 API 키를 입력하세요"
 	}
 	switch {
 	case status == "mic-permission":
@@ -2025,22 +2070,40 @@ func buildSubtitleMsg(eng *subtitle.Engine, showSource, alternate bool) ipc.Subt
 	dl := eng.DisplayLines()
 	var lines []string
 	var speakers []int
-	var sources []string
-	hasSource := false
+	var sources, labels, tails, srcTails []string
+	hasSource, hasLabel, hasTail, hasSrcTail := false, false, false, false
 	for _, l := range dl {
+		src, srcTail := "", ""
+		if showSource {
+			src, srcTail = l.Source, l.SourceTail
+		}
+		// 번역도 꼬리도 없고 보여 줄 원문도 없는 줄(번역 전 원문 줄인데 원문 표시가 꺼진 경우)은
+		// 빈 칸만 차지하므로 보내지 않는다.
+		if l.Text == "" && l.Tail == "" && src == "" && srcTail == "" {
+			continue
+		}
 		lines = append(lines, l.Text)
 		speakers = append(speakers, l.Speaker)
-		s := ""
-		if showSource {
-			s = l.Source
-		}
-		if s != "" {
-			hasSource = true
-		}
-		sources = append(sources, s)
+		sources = append(sources, src)
+		srcTails = append(srcTails, srcTail)
+		labels = append(labels, l.Label)
+		tails = append(tails, l.Tail)
+		hasSource = hasSource || src != ""
+		hasSrcTail = hasSrcTail || srcTail != ""
+		hasLabel = hasLabel || l.Label != ""
+		hasTail = hasTail || l.Tail != ""
 	}
 	if !hasSource {
 		sources = nil // 원문이 하나도 없으면 배열 자체를 보내지 않는다(메시지 간소화).
+	}
+	if !hasSrcTail {
+		srcTails = nil
+	}
+	if !hasLabel {
+		labels = nil
+	}
+	if !hasTail {
+		tails = nil
 	}
 	// 구버전 오버레이 하위호환: 진행 중 원문 1줄을 기존 필드에도 그대로 채운다.
 	src := ""
@@ -2048,11 +2111,14 @@ func buildSubtitleMsg(eng *subtitle.Engine, showSource, alternate bool) ipc.Subt
 		src = eng.DisplaySource()
 	}
 	return ipc.SubtitleMsg{
-		Lines:    lines,
-		Speakers: speakers,
-		Sources:  sources,
-		Source:   src,
-		Visible:  eng.Visible(),
+		Lines:       lines,
+		Speakers:    speakers,
+		Sources:     sources,
+		Source:      src,
+		Visible:     eng.Visible(),
+		Labels:      labels,
+		Tails:       tails,
+		SourceTails: srcTails,
 	}
 }
 
@@ -2129,6 +2195,13 @@ func subtitleSignature(m ipc.SubtitleMsg) string {
 		b.WriteByte(byte('0' + sp&1))
 		b.WriteByte(':')
 		b.WriteString(l)
+		// 원문·화자 표시·미확정 꼬리가 바뀌어도 화면이 달라진다.
+		for _, arr := range [][]string{m.Sources, m.Labels, m.Tails, m.SourceTails} {
+			b.WriteByte(0)
+			if i < len(arr) {
+				b.WriteString(arr[i])
+			}
+		}
 		b.WriteByte('\n')
 	}
 	return b.String()

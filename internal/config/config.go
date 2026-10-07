@@ -35,7 +35,137 @@ const (
 
 	// CredKey is the OS 자격증명 저장소 키(credstore.ServiceName 서비스 하위).
 	CredKey = "gemini_api_key"
+
+	// EngineGemini / EngineSoniox 는 번역 엔진 식별자다(settings.json model.engine).
+	EngineGemini = "gemini"
+	EngineSoniox = "soniox"
+
+	// SonioxAPIKeyEnv / SonioxCredKey 는 Soniox 키의 환경변수 이름과 자격증명 저장소 키다.
+	SonioxAPIKeyEnv = "SONIOX_API_KEY"
+	SonioxCredKey   = "soniox_api_key"
 )
+
+// NormalizeEngine 은 모르는 값·빈 값을 기본 엔진(gemini)으로 돌린다.
+func NormalizeEngine(e string) string {
+	if strings.EqualFold(strings.TrimSpace(e), EngineSoniox) {
+		return EngineSoniox
+	}
+	return EngineGemini
+}
+
+// EngineLabel 은 사용자에게 보여 줄 엔진 이름이다.
+func EngineLabel(engine string) string {
+	if NormalizeEngine(engine) == EngineSoniox {
+		return "Soniox"
+	}
+	return "Gemini"
+}
+
+// noKeyError 는 Gemini 외 엔진의 키가 없을 때의 오류다. errors.Is(err, ErrNoAPIKey)는 참이다.
+type noKeyError struct{ engine string }
+
+func (e noKeyError) Error() string {
+	env, cred := keyNames(e.engine)
+	return "config: " + EngineLabel(e.engine) + " API 키를 찾을 수 없습니다 — 환경변수 " + env +
+		" 를 설정하거나 OS 자격증명 저장소(" + credstore.ServiceName + "/" + cred + ")에 저장하세요"
+}
+
+func (e noKeyError) Is(target error) bool { return target == ErrNoAPIKey }
+
+// keyNames returns (환경변수 이름, 자격증명 저장소 키) for the engine.
+func keyNames(engine string) (env, cred string) {
+	if NormalizeEngine(engine) == EngineSoniox {
+		return SonioxAPIKeyEnv, SonioxCredKey
+	}
+	return APIKeyEnv, CredKey
+}
+
+// EngineAPIKey resolves the API key of the given engine: 환경변수 → 자격증명 저장소.
+// 둘 다 없으면 ErrNoAPIKey 계열 오류(엔진 이름 포함)를 돌려준다.
+func EngineAPIKey(engine string) (string, error) {
+	env, cred := keyNames(engine)
+	if v := os.Getenv(env); v != "" {
+		return v, nil
+	}
+	v, err := credstore.Load(credstore.ServiceName, cred)
+	if err != nil {
+		return "", fmt.Errorf("config: 자격증명 저장소 조회 실패: %w", err)
+	}
+	if v == "" {
+		if NormalizeEngine(engine) == EngineGemini {
+			return "", ErrNoAPIKey
+		}
+		return "", noKeyError{engine: NormalizeEngine(engine)}
+	}
+	return v, nil
+}
+
+// SaveEngineAPIKey stores (빈 값이면 삭제) the API key of the given engine.
+func SaveEngineAPIKey(engine, key string) error {
+	_, cred := keyNames(engine)
+	key = strings.TrimSpace(key)
+	if key == "" {
+		if err := credstore.Delete(credstore.ServiceName, cred); err != nil {
+			return fmt.Errorf("config: 자격증명 저장소 삭제 실패: %w", err)
+		}
+		return nil
+	}
+	if err := credstore.Save(credstore.ServiceName, cred, key); err != nil {
+		return fmt.Errorf("config: 자격증명 저장소 저장 실패: %w", err)
+	}
+	return nil
+}
+
+// EngineKeySource reports where the engine's key comes from: "환경변수" | "키체인" | "없음".
+func EngineKeySource(engine string) string {
+	env, cred := keyNames(engine)
+	if os.Getenv(env) != "" {
+		return "환경변수"
+	}
+	if v, err := credstore.Load(credstore.ServiceName, cred); err == nil && v != "" {
+		return "키체인"
+	}
+	return "없음"
+}
+
+// TestEngineAPIKey verifies a key against the engine's REST endpoint.
+func TestEngineAPIKey(ctx context.Context, engine, key string) error {
+	if NormalizeEngine(engine) == EngineSoniox {
+		return TestSonioxAPIKey(ctx, key)
+	}
+	return TestAPIKey(ctx, key)
+}
+
+// TestSonioxAPIKey verifies a Soniox key: GET https://api.soniox.com/v1/models 가 200이면 유효.
+// 키는 Authorization 헤더에만 실리고 로그/오류에 노출하지 않는다.
+func TestSonioxAPIKey(ctx context.Context, key string) error {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return errors.New("API 키가 비어 있습니다")
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "https://api.soniox.com/v1/models", nil)
+	if err != nil {
+		return errors.New("요청 생성에 실패했습니다")
+	}
+	req.Header.Set("Authorization", "Bearer "+key)
+	resp, err := (&http.Client{Timeout: 8 * time.Second}).Do(req)
+	if err != nil {
+		return errors.New("네트워크 오류로 연결하지 못했습니다")
+	}
+	defer func() { _ = resp.Body.Close() }()
+	switch {
+	case resp.StatusCode == http.StatusOK:
+		return nil
+	case resp.StatusCode == http.StatusUnauthorized, resp.StatusCode == http.StatusForbidden:
+		return errors.New("API 키가 거부되었습니다")
+	case resp.StatusCode == http.StatusPaymentRequired:
+		return errors.New("Soniox 계정 잔액이 없습니다 — 콘솔에서 충전해 주세요")
+	case resp.StatusCode == http.StatusTooManyRequests:
+		return errors.New("요청 한도를 초과했습니다")
+	default:
+		return fmt.Errorf("연결에 실패했습니다 (HTTP %d)", resp.StatusCode)
+	}
+}
 
 // ErrNoAPIKey is returned when no API key is found in env nor the credential store.
 var ErrNoAPIKey = errors.New("config: Gemini API 키를 찾을 수 없습니다 — 환경변수 " +

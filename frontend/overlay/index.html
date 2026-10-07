@@ -301,6 +301,10 @@
         }
 
         let drewSource = false;
+        // 같은 사람이 이어 말하는 동안은 화자·언어 표시를 첫 줄에만 붙인다. 줄마다 붙이면
+        // 같은 표시가 반복돼 읽기 거슬린다. 화면 맨 윗줄은 앞 줄이 밀려 사라졌으므로 늘 붙인다.
+        // 언어가 바뀌어도(같은 화자 IT → EN) 다시 붙인다 — 표시 문자열 전체를 비교한다.
+        let prevLabel = "";
         for (let i = 0; i < lines.length; i++) {
           const el = document.createElement("div");
           el.className = "line";
@@ -314,7 +318,9 @@
           }
           // 원문 줄: 화자·언어 표시(있으면) + 원문(원문 동시 표시가 켜졌을 때).
           const src = allSources ? allSources[spOffset + i] : "";
-          const label = allLabels[spOffset + i] || "";
+          const rawLabel = allLabels[spOffset + i] || "";
+          const label = rawLabel && rawLabel !== prevLabel ? rawLabel : "";
+          if (rawLabel) prevLabel = rawLabel;
           const srcTail = allSrcTails[spOffset + i] || "";
           // 원문을 그리지 않는 줄(원문 표시 꺼짐)은 화자·언어 표시를 번역문 앞에 붙인다.
           // 표시만 따로 한 줄을 차지하면 자막이 두 배로 높아지고, 어느 줄의 화자인지도 헷갈린다.

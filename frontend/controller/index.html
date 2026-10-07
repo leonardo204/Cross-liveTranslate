@@ -77,6 +77,15 @@
     .status-dot.capturing { background: var(--red); }
     .status-text { font-size: 11px; font-weight: 600; color: var(--primary); }
     .spacer { flex: 1 1 auto; }
+    /* 번역 엔진 표시 — 지금 어느 엔진으로 번역하는지(Gemini 3.5 / Soniox). */
+    .model {
+      flex: 0 1 auto; min-width: 0;
+      height: 15px; padding: 0 6px; border-radius: 8px;
+      display: inline-flex; align-items: center;
+      background: var(--track); color: var(--secondary);
+      font-size: 9.5px; font-weight: 600; line-height: 1;
+      white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    }
     /* 업데이트 배지: 자동 확인이 새 버전을 발견했을 때만 표시(원본 Sparkle 알림 대체).
        클릭 시 App.DownloadAndInstallUpdate 로 설치. 평소 display:none — 레이아웃 미영향. */
     .update-btn {
@@ -198,6 +207,7 @@
     <div class="header">
       <span id="dot" class="status-dot"></span>
       <span id="statusText" class="status-text">정지</span>
+      <span id="model" class="model" title="번역 엔진"></span>
       <button id="updateBtn" class="update-btn" type="button" title="업데이트 설치">업데이트</button>
       <span class="spacer"></span>
       <span id="speak" class="speak">
@@ -298,6 +308,9 @@
         var capturing = !!h.capturing;
         $("dot").classList.toggle("capturing", capturing);
         $("statusText").textContent = h.statusText || (capturing ? "캡처중" : "정지");
+        var m = $("model");
+        m.textContent = h.modelLabel || "";
+        m.style.display = h.modelLabel ? "" : "none";
 
         // 업데이트 배지 — 자동 확인이 새 버전을 발견하면 표시(원본 Sparkle 알림 대체).
         var upd = $("updateBtn");

@@ -1942,6 +1942,9 @@ type hudPayload struct {
 	// 발견하면 HUD에 클릭 가능한 "업데이트 vX.Y.Z" 배지를 띄운다(클릭 → 설치).
 	UpdateAvailable bool   `json:"updateAvailable"`
 	UpdateVersion   string `json:"updateVersion"`
+	// ModelLabel 은 지금 쓰는 번역 엔진의 짧은 이름이다("Gemini 3.5" | "Soniox").
+	// 엔진을 바꿀 수 있게 되면서, 지금 어느 쪽으로 번역 중인지 제어 HUD에서 바로 보이게 한다.
+	ModelLabel string `json:"modelLabel"`
 }
 
 // buildHUD snapshots the current control-HUD display state. 어느 goroutine에서든
@@ -1956,6 +1959,7 @@ func (c *Controller) buildHUD() hudPayload {
 	keyLoaded := c.apiKeyErr == nil
 	updateAvail := c.updateAvailable
 	updateVer := c.updateVersion
+	engine := config.NormalizeEngine(c.settings.Model.Engine)
 	c.mu.Unlock()
 
 	// 최근 청크 유무로 무음/정지 시 레벨을 0으로 감쇠한다(원본 clampedLevel: 캡처 중 아니면 0).
@@ -2003,6 +2007,7 @@ func (c *Controller) buildHUD() hudPayload {
 		IsRunning:         running,
 		UpdateAvailable:   updateAvail,
 		UpdateVersion:     updateVer,
+		ModelLabel:        engineShortLabel(engine),
 	}
 }
 

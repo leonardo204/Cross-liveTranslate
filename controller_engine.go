@@ -104,3 +104,11 @@ func (c *Controller) applyEngineMode(eng *subtitle.Engine) {
 	eng.TurnBoundarySilence = c.turnBoundarySilence()
 	eng.QuestionBoundary = c.wantQuestionBoundary()
 }
+
+// engineShortLabel is the compact engine name shown on the control HUD header.
+func engineShortLabel(engine string) string {
+	if engine == config.EngineSoniox {
+		return "Soniox"
+	}
+	return "Gemini 3.5"
+}

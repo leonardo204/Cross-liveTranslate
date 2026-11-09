@@ -27,7 +27,7 @@ const LATEST_JSON = RELEASES + "/latest/download/latest.json";
 const CONTACT_EMAIL = "zerolive7@gmail.com";
 
 /** latest.json 을 읽지 못했을 때 페이지에 표시할 버전. 릴리스 때 함께 올린다. */
-const FALLBACK_VERSION = "1.6.0";
+const FALLBACK_VERSION = "1.10.0";
 
 interface Env {
 	ASSETS: Fetcher;
@@ -40,20 +40,86 @@ interface Manifest {
 	platforms: Record<string, { url: string }>;
 }
 
-/** latest.json 조회. 실패하면 null. 엣지 캐시 10분. */
-async function loadManifest(): Promise<Manifest | null> {
+/**
+ * latest.json 조회. 실패하면 null.
+ *
+ * GitHub 릴리스 파일 서버가 504 를 내며 10초 넘게 붙잡아 둔 일이 있었다(2026-11-08~09).
+ * 이 값을 기다리는 동안 첫 화면이 그려지지 않아 '랜딩이 안 열린다'는 메일이 왔다.
+ * 실패 응답은 엣지 캐시에 남지 않아 요청마다 GitHub 까지 가서 다시 기다렸다.
+ *
+ * 그래서 세 겹으로 막는다.
+ *   ① 마지막으로 성공한 값을 Cloudflare 캐시에 따로 둔다. 10분 안쪽이면 GitHub 를 부르지 않는다.
+ *   ② GitHub 는 2초만 기다린다.
+ *   ③ 실패하면 남겨 둔 값을 쓰고, 10분 동안은 다시 부르지 않는다(시간만 새로 찍는다).
+ */
+const MANIFEST_TIMEOUT_MS = 2_000;
+const MANIFEST_FRESH_MS = 10 * 60 * 1000;
+const MANIFEST_KEEP_S = 30 * 24 * 3600;
+const MANIFEST_KEY = SITE + "/__cache/latest-manifest";
+
+interface Stored {
+	at: number;
+	m: Manifest;
+}
+
+function validManifest(data: unknown): data is Manifest {
+	const d = data as Manifest | null;
+	return !!d && typeof d.version === "string" && !!d.platforms && typeof d.platforms === "object";
+}
+
+async function readStored(): Promise<Stored | null> {
+	try {
+		const hit = await caches.default.match(MANIFEST_KEY);
+		if (!hit) return null;
+		const s = (await hit.json()) as Stored;
+		return s && typeof s.at === "number" && validManifest(s.m) ? s : null;
+	} catch {
+		return null;
+	}
+}
+
+async function writeStored(m: Manifest): Promise<void> {
+	try {
+		await caches.default.put(
+			MANIFEST_KEY,
+			new Response(JSON.stringify({ at: Date.now(), m } satisfies Stored), {
+				headers: { "Content-Type": "application/json", "Cache-Control": `public, max-age=${MANIFEST_KEEP_S}` },
+			}),
+		);
+	} catch {
+		/* 캐시에 못 남겨도 이번 응답은 그대로 쓴다 */
+	}
+}
+
+async function fetchManifest(): Promise<Manifest | null> {
 	try {
 		const resp = await fetch(LATEST_JSON, {
 			cf: { cacheTtl: 600, cacheEverything: true },
 			headers: { "User-Agent": "live-translate-landing" },
+			signal: AbortSignal.timeout(MANIFEST_TIMEOUT_MS),
 		});
 		if (!resp.ok) return null;
-		const data = (await resp.json()) as Manifest;
-		if (!data || typeof data.version !== "string" || !data.platforms) return null;
-		return data;
+		const data = await resp.json();
+		return validManifest(data) ? data : null;
 	} catch {
 		return null;
 	}
+}
+
+async function loadManifest(): Promise<Manifest | null> {
+	const stored = await readStored();
+	if (stored && Date.now() - stored.at < MANIFEST_FRESH_MS) return stored.m;
+	const fresh = await fetchManifest();
+	if (fresh) {
+		await writeStored(fresh);
+		return fresh;
+	}
+	// GitHub 가 실패했다. 남겨 둔 값이 있으면 그것을 쓰고, 10분 동안은 다시 기다리지 않게 시간만 새로 찍는다.
+	if (stored) {
+		await writeStored(stored.m);
+		return stored.m;
+	}
+	return null;
 }
 
 /**

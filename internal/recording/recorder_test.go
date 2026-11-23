@@ -78,16 +78,17 @@ func TestAppendVsTruncate(t *testing.T) {
 		t.Errorf("append should keep prior content:\n%s", got)
 	}
 
-	// append=false: 기존 내용이 사라지고 새 내용만.
+	// append=false: 같은 이름이 있으면 기존 파일을 지우지 않고 rec-2.txt 를 새로 만든다.
 	_ = r.Start(path, false)
 	r.WriteLine(ts, "", "새로쓰기")
 	_ = r.Stop()
 	got = read(t, path)
-	if strings.Contains(got, "첫세션") {
-		t.Errorf("truncate should drop prior content:\n%s", got)
+	if !strings.Contains(got, "첫세션") || strings.Contains(got, "새로쓰기") {
+		t.Errorf("기존 파일은 그대로여야 한다:\n%s", got)
 	}
-	if !strings.Contains(got, "새로쓰기") {
-		t.Errorf("truncate should keep new content:\n%s", got)
+	got = read(t, filepath.Join(dir, "rec-2.txt"))
+	if !strings.Contains(got, "새로쓰기") || strings.Contains(got, "첫세션") {
+		t.Errorf("새 파일에는 새 내용만 있어야 한다:\n%s", got)
 	}
 }
 
@@ -146,4 +147,44 @@ func TestFirstLineCreatesFile(t *testing.T) {
 		t.Fatalf("헤더/본문이 없다:\n%s", got)
 	}
 	_ = r.Stop()
+}
+
+// 녹화를 켜는 순간(Open) 자막이 없어도 파일이 바로 생긴다. 사용자가 폴더에서 녹화가
+// 동작하는지 바로 확인할 수 있어야 한다는 제보에 따른 동작이다.
+func TestOpenCreatesFileImmediately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "now.txt")
+	r := New()
+	if err := r.Start(path, false); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	got, err := r.Open()
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	if got != path {
+		t.Fatalf("경로가 다르다: %s", got)
+	}
+	if !strings.Contains(read(t, path), "녹화 시작") {
+		t.Fatal("자막 전에도 헤더가 기록되어야 한다")
+	}
+	if r.Waiting() {
+		t.Fatal("Open 뒤에는 대기 상태가 아니어야 한다")
+	}
+	_ = r.Stop()
+	if !strings.Contains(read(t, path), "녹화 종료") {
+		t.Fatal("종료 표시가 없다")
+	}
+}
+
+// 만들 수 없는 경로면 Open 이 오류를 돌려주고 녹화는 꺼진다.
+func TestOpenFailureTurnsOff(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "no-such-dir", "x.txt")
+	r := New()
+	_ = r.Start(path, false)
+	if _, err := r.Open(); err == nil {
+		t.Fatal("없는 폴더인데 오류가 없다")
+	}
+	if r.IsRecording() {
+		t.Fatal("열기 실패 뒤에는 녹화 중이 아니어야 한다")
+	}
 }

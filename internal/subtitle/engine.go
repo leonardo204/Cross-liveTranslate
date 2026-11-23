@@ -384,6 +384,17 @@ func (e *Engine) TurnComplete() {
 	e.pendingGenerationReset = true
 }
 
+// Flush 는 아직 확정되지 않은 현재 줄이 있으면 지금 확정한다(녹화를 끄는 순간 등).
+// 무음 2초를 기다리지 않고 진행 중이던 문장을 녹화 파일에 남기기 위해 쓴다.
+func (e *Engine) Flush() {
+	if strings.TrimSpace(e.currentTranslation) == "" && strings.TrimSpace(e.currentSource) == "" {
+		return
+	}
+	e.logf("engine.flush 진행 중 줄 즉시 확정 current=%q", preview(e.currentTranslation))
+	e.confirmTurn(reasonSilence)
+	e.pendingGenerationReset = true
+}
+
 // TurnBoundaryHint 는 오디오 도메인(VAD 옵저버)에서 감지한 화자 경계를 반영한다.
 // 캡처 오디오의 실무음이 임계(기본 700ms) 이상 지속된 뒤 새 발화가 시작되면 controller가
 // 그 다음 번역 delta를 넣기 **직전에** 호출한다. 번역 지연 특성상 그 시점엔 이전 발화의

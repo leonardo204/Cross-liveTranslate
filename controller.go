@@ -176,6 +176,10 @@ type Controller struct {
 	// writer 불변식을 유지하기 위해 반드시 runLoop에서만 엔진을 만진다.
 	testCh chan bool
 
+	// flushCh 는 녹화를 끄기 직전 runLoop 에게 진행 중인 자막 줄을 확정하라고 요청한다.
+	// 엔진은 runLoop 단독 소유라 직접 만지지 않고, 처리가 끝나면 받은 채널을 닫아 알린다.
+	flushCh chan chan struct{}
+
 	closeOnce sync.Once
 }
 
@@ -191,6 +195,7 @@ func newController() *Controller {
 		styleCh:  make(chan ipc.StyleMsg, 8),
 		testCh:   make(chan bool, 4),
 		noticeCh: make(chan string, 4),
+		flushCh:  make(chan chan struct{}, 1),
 		settings: config.DefaultSettings(),
 		// 실제 초기값은 runController가 hudStartsHidden()으로 정해 덮어쓴다(창의 StartHidden과
 		// 반드시 일치해야 트레이 체크 표식/첫 토글이 헛돌지 않는다).
@@ -267,14 +272,17 @@ func (c *Controller) start(ctx context.Context, flags controllerFlags) {
 	c.mu.Unlock()
 	c.estimator = cost.New(seedCum)
 	c.recorder = recording.New()
+	// 늦춰 연 파일(앱 시작 때 복원한 녹화)이 첫 자막에서 열리지 못하면 녹화를 끄고 알린다.
+	// 알리지 않으면 HUD는 계속 '녹화 중'으로 보이고 파일은 끝내 생기지 않는다.
+	c.recorder.OnOpenError = func(path string, err error) { c.recordingFailed(path, err) }
 
 	// 녹화를 켜 둔 채 껐다면 그대로 켜진 상태로 시작한다(새 타임스탬프 파일).
-	// 실제 파일은 첫 확정 자막에서 만들어지므로, 말이 없으면 빈 파일이 생기지 않는다.
+	// 앱을 켤 때마다 빈 파일이 생기지 않도록, 이때만 번역을 시작하는 순간에 파일을 만든다.
 	c.mu.Lock()
 	recOn := c.settings.Recording.Enabled
 	c.mu.Unlock()
 	if recOn {
-		if err := c.StartRecording("", false); err != nil {
+		if err := c.startRecording("", false, false); err != nil {
 			log.Println("[controller] 지난 녹화 상태 복원 실패:", err)
 		}
 	}
@@ -522,6 +530,7 @@ func (c *Controller) reloadSettings() {
 
 	c.mu.Lock()
 	prevAutoCheck := c.settings.Update.AutoCheck
+	prevRecDir := c.settings.Recording.Directory
 	c.settings = s
 	c.cacheAudioBoundary(s) // 오디오 경로용 lock-free 캐시(설정 변경 즉시 반영).
 	c.target = s.Language.Target
@@ -563,6 +572,7 @@ func (c *Controller) reloadSettings() {
 	}
 	c.applyAudioPolicy(audioCfg, running)
 	c.queueStyle()
+	c.restartRecordingIfDirChanged(prevRecDir, s.Recording.Directory)
 
 	c.emitHUD()
 	c.emitStatus()
@@ -696,6 +706,10 @@ func (c *Controller) runLoop() {
 			if c.applyTestSubtitle(eng, on) {
 				maybePush()
 			}
+		case done := <-c.flushCh:
+			eng.Flush()
+			maybePush()
+			close(done)
 		case text := <-c.noticeCh:
 			// 같은 문구가 다시 오면 만료 시각만 늘어난다(다시 시작을 눌렀을 때 재노출).
 			notice = text
@@ -741,12 +755,13 @@ const (
 // 사용자 알림 문구(오버레이 자막 위에 한 줄). 조용히 실패하던 지점들을 화면으로 끌어올린다 —
 // 제어 HUD 하단 작은 글씨는 트레이 상주 상태(HUD 숨김)에서는 보이지 않기 때문이다.
 const (
-	noticeNoAPIKey   = "Gemini API 키가 없습니다 — 설정 창에서 키를 입력하세요"
-	noticeMicDenied  = "마이크 권한이 없습니다 — 시스템 설정에서 허용한 뒤 다시 시작하세요"
-	noticeSysAudio   = "시스템 오디오 권한이 없습니다 — 시스템 설정에서 허용한 뒤 다시 시작하세요"
-	noticeLoopbackNo = "시스템 소리를 잡을 수 없습니다 — 입력을 마이크로 바꾸거나 macOS 14.4 이상이 필요합니다"
-	noticeConnFailed = "번역 연결에 실패했습니다 — 잠시 뒤 다시 시작해 보세요"
-	noticeNoDevice   = "선택한 입력 장치를 찾을 수 없습니다 — 설정에서 입력을 다시 고르세요"
+	noticeNoAPIKey     = "Gemini API 키가 없습니다 — 설정 창에서 키를 입력하세요"
+	noticeMicDenied    = "마이크 권한이 없습니다 — 시스템 설정에서 허용한 뒤 다시 시작하세요"
+	noticeSysAudio     = "시스템 오디오 권한이 없습니다 — 시스템 설정에서 허용한 뒤 다시 시작하세요"
+	noticeLoopbackNo   = "시스템 소리를 잡을 수 없습니다 — 입력을 마이크로 바꾸거나 macOS 14.4 이상이 필요합니다"
+	noticeConnFailed   = "번역 연결에 실패했습니다 — 잠시 뒤 다시 시작해 보세요"
+	noticeNoDevice     = "선택한 입력 장치를 찾을 수 없습니다 — 설정에서 입력을 다시 고르세요"
+	noticeRecordFailed = "녹화 파일을 만들지 못했습니다 — 저장 폴더와 폴더 접근 권한을 확인하세요"
 )
 
 // noticeTTL 은 알림 한 줄이 화면에 남는 시간이다. 자막을 오래 가리지 않으면서도 눈에 들어올
@@ -1404,6 +1419,8 @@ func (c *Controller) Start() error {
 	}
 
 	c.r.SetDesired(d)
+	// 앱 시작 때 복원한 녹화는 번역 세션이 시작되는 지금 파일을 만든다.
+	c.openPendingRecording()
 	// 테스트 자막(고정 미리보기)이 켜져 있으면 끈다 — 실제 자막이 우선(원본 AppState.start 이식).
 	// running이 이미 true라 새 미리보기 요청은 무시되고, 남아 있던 미리보기 엔진 상태만 청소된다.
 	c.queueTestSubtitle(false)
@@ -1556,6 +1573,7 @@ func (c *Controller) SaveSettings(s config.Settings) error {
 
 	c.mu.Lock()
 	prevAutoCheck := c.settings.Update.AutoCheck
+	prevRecDir := c.settings.Recording.Directory
 	c.settings = s
 	c.cacheAudioBoundary(s) // 오디오 경로용 lock-free 캐시(설정 변경 즉시 반영).
 	c.target = s.Language.Target
@@ -1584,6 +1602,7 @@ func (c *Controller) SaveSettings(s config.Settings) error {
 	c.applyAudioPolicy(audioCfg, running)
 	// 자막 스타일/위치(모니터·수직·폰트·색 등) 변경을 오버레이에 즉시 반영한다.
 	c.queueStyle()
+	c.restartRecordingIfDirChanged(prevRecDir, s.Recording.Directory)
 	return nil
 }
 
@@ -1811,11 +1830,43 @@ func (c *Controller) persistCumulative() {
 
 // StartRecording opens a subtitle recording file in Settings.Recording.Directory.
 // filename이 비어 있으면 타임스탬프 기본 이름(subtitles-YYYYMMDD-HHMMSS.txt)을 쓴다.
-// append=true면 이어붙이기, false면 새로쓰기. 확정 자막이 들어올 때마다 한 줄씩 기록된다.
+// append=true면 이어붙이기, false면 새로쓰기. 파일은 녹화를 켜는 즉시 만든다 — 자막이 나오기
+// 전에도 사용자가 폴더에서 파일을 보고 녹화가 동작하는지 알 수 있어야 한다.
 func (c *Controller) StartRecording(filename string, appendMode bool) error {
+	return c.startRecording(filename, appendMode, true)
+}
+
+// startRecording 은 녹화를 켠다. openNow=false 는 앱 시작 때 지난 녹화 상태를 복원하는 경우로,
+// 파일은 번역을 시작할 때(openPendingRecording) 또는 첫 자막에서 만든다.
+func (c *Controller) startRecording(filename string, appendMode, openNow bool) error {
 	if c.recorder == nil {
 		return errors.New("controller: recorder not initialized")
 	}
+	path, err := c.recordingPath(filename)
+	if err != nil {
+		c.recordingFailed(path, err)
+		return err
+	}
+	if err := c.recorder.Start(path, appendMode); err != nil {
+		return err
+	}
+	if openNow {
+		real, oerr := c.recorder.Open()
+		if oerr != nil {
+			c.recordingFailed(path, oerr)
+			return oerr
+		}
+		log.Printf("[controller] 자막 녹화 시작: %s (append=%v)", real, appendMode)
+	} else {
+		log.Printf("[controller] 자막 녹화 복원: %s (append=%v) — 번역 시작 때 파일을 만든다", path, appendMode)
+	}
+	c.setRecordingEnabled(true)
+	c.emitRecording()
+	return nil
+}
+
+// recordingPath 는 설정의 저장 폴더(없으면 문서 폴더)와 파일 이름으로 녹화 경로를 만든다.
+func (c *Controller) recordingPath(filename string) (string, error) {
 	c.mu.Lock()
 	dir := c.settings.Recording.Directory
 	c.mu.Unlock()
@@ -1828,32 +1879,79 @@ func (c *Controller) StartRecording(filename string, appendMode bool) error {
 	if name == "" {
 		name = "subtitles-" + time.Now().Format("20060102-150405") + ".txt"
 	}
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return err
-	}
 	path := filepath.Join(dir, name)
-	if err := c.recorder.Start(path, appendMode); err != nil {
-		return err
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return path, err
 	}
-	log.Printf("[controller] 자막 녹화 예약: %s (append=%v) — 첫 확정 자막에서 파일을 만든다", path, appendMode)
-	c.setRecordingEnabled(true)
-	c.emitRecording()
-	return nil
+	return path, nil
 }
 
-// StopRecording closes the current recording file (멱등).
+// openPendingRecording 은 켜져 있지만 아직 파일이 없는 녹화(앱 시작 때 복원)의 파일을 지금 만든다.
+func (c *Controller) openPendingRecording() {
+	if c.recorder == nil || !c.recorder.Waiting() {
+		return
+	}
+	path := c.recorder.Path()
+	real, err := c.recorder.Open()
+	if err != nil {
+		c.recordingFailed(path, err)
+		return
+	}
+	log.Printf("[controller] 자막 녹화 파일 생성(세션 시작): %s", real)
+}
+
+// recordingFailed 는 녹화 파일을 만들지 못했을 때 녹화를 끄고 화면에 알린다.
+// 녹화기 잠금 밖에서 불러야 한다(OnOpenError 는 잠금을 푼 뒤 부른다).
+func (c *Controller) recordingFailed(path string, err error) {
+	log.Printf("[controller] 자막 녹화 파일을 만들지 못했습니다: %s: %v", path, err)
+	if c.recorder != nil {
+		_ = c.recorder.Stop()
+	}
+	c.notify(noticeRecordFailed)
+	c.setRecordingEnabled(false)
+	c.emitRecording()
+}
+
+// StopRecording closes the current recording file (멱등). 닫기 전에 진행 중이던 자막 줄을
+// 확정해 기록한다 — 그러지 않으면 마지막 문장(짧은 녹화면 유일한 문장)이 빠진다.
 func (c *Controller) StopRecording() error {
 	if c.recorder == nil {
 		return nil
 	}
+	c.flushSubtitle()
 	err := c.recorder.Stop()
 	log.Println("[controller] 자막 녹화 종료")
-	if oerr := c.recorder.OpenError(); oerr != nil {
-		log.Println("[controller] 자막 녹화 파일을 만들지 못했습니다:", oerr)
-	}
 	c.setRecordingEnabled(false)
 	c.emitRecording()
 	return err
+}
+
+// flushSubtitle 은 runLoop 에게 진행 중인 줄을 확정하게 하고 최대 1초 기다린다.
+func (c *Controller) flushSubtitle() {
+	done := make(chan struct{})
+	select {
+	case c.flushCh <- done:
+	default:
+		return // 이미 요청이 대기 중이면 그 요청이 처리한다.
+	}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		log.Println("[controller] 녹화 종료 전 자막 확정 대기 시간 초과")
+	}
+}
+
+// restartRecordingIfDirChanged 는 녹화 중에 저장 폴더가 바뀌면 지금 파일을 닫고 새 폴더에서
+// 새 파일로 이어서 녹화한다. 바꾸지 않으면 새 폴더에서 파일을 찾을 수 없다.
+func (c *Controller) restartRecordingIfDirChanged(prevDir, newDir string) {
+	if c.recorder == nil || !c.recorder.IsRecording() || prevDir == newDir {
+		return
+	}
+	wasOpen := !c.recorder.Waiting()
+	c.flushSubtitle()
+	_ = c.recorder.Stop()
+	log.Printf("[controller] 녹화 저장 폴더 변경 %q → %q — 새 폴더에서 이어서 녹화한다", prevDir, newDir)
+	_ = c.startRecording("", false, wasOpen)
 }
 
 // setRecordingEnabled persists the 녹화 토글 상태 so the next launch starts the same

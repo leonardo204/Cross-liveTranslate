@@ -33,6 +33,7 @@ import (
 	"cross-livetranslate/internal/ipc"
 	"cross-livetranslate/internal/permission"
 	"cross-livetranslate/internal/reveal"
+	"cross-livetranslate/internal/soniox"
 	"cross-livetranslate/internal/txlog"
 
 	wruntime "github.com/wailsapp/wails/v2/pkg/runtime"
@@ -294,9 +295,36 @@ func (s *SettingsAPI) Models() []ModelInfo {
 			ID:              config.EngineSoniox,
 			Name:            "Soniox 실시간 번역",
 			Engine:          "soniox",
-			ModelIdentifier: "stt-rt-v5",
+			ModelIdentifier: soniox.DefaultModel,
 		},
 	}
+}
+
+// SonioxModelList 는 설정 창 "Soniox 모델" 목록이다.
+//
+//	Models — 이 키로 쓸 수 있는 실시간 모델(최신순).
+//	Latest — 자동으로 고를 때 쓰는 모델 id.
+//	Error  — 목록을 받지 못한 이유(키 없음·네트워크). 비어 있으면 성공.
+type SonioxModelList struct {
+	Models []soniox.ModelEntry `json:"models"`
+	Latest string              `json:"latest"`
+	Error  string              `json:"error"`
+}
+
+// SonioxModels fetches the real-time model list with the stored Soniox key.
+// 실패해도 오류를 던지지 않고 Error 에 사람이 읽을 문장을 담는다(키 비포함).
+func (s *SettingsAPI) SonioxModels() SonioxModelList {
+	key, err := config.EngineAPIKey(config.EngineSoniox)
+	if err != nil || strings.TrimSpace(key) == "" {
+		return SonioxModelList{Latest: soniox.DefaultModel, Error: "Soniox 키를 저장하면 모델 목록을 불러옵니다"}
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	models, err := soniox.FetchRealtimeModels(ctx, key)
+	if err != nil {
+		return SonioxModelList{Latest: soniox.DefaultModel, Error: "모델 목록을 불러오지 못했습니다(네트워크나 키를 확인하세요)"}
+	}
+	return SonioxModelList{Models: models, Latest: soniox.LatestModel(models)}
 }
 
 // DirPickResult 는 폴더 선택 창의 결과다. 프론트가 "취소"와 "열지 못함"을 구분해야

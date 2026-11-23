@@ -25,6 +25,7 @@ func newSonioxProvider(key, target string, s config.SonioxSettings) pipeline.Pro
 	}
 	return soniox.NewClient(soniox.Config{
 		APIKey:           key,
+		Model:            strings.TrimSpace(s.Model),
 		TargetLanguage:   target,
 		LanguageHints:    cleanList(s.LanguageHints),
 		Context:          strings.TrimSpace(s.Context),

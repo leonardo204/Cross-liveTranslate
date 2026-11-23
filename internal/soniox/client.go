@@ -38,7 +38,6 @@ import (
 
 const (
 	endpoint              = "wss://stt-rt.soniox.com/transcribe-websocket"
-	model                 = "stt-rt-v5"
 	initialReconnectDelay = 1 * time.Second
 	maxReconnectDelay     = 30 * time.Second
 	maxConnectAttempts    = 5
@@ -55,7 +54,9 @@ type TranslationTerm struct {
 
 // Config configures a Client.
 type Config struct {
-	APIKey           string
+	APIKey string
+	// Model 은 사용자가 고른 실시간 모델 id 다. 비면 자동(목록의 최신 모델). models.go 참고.
+	Model            string
 	TargetLanguage   string
 	LanguageHints    []string
 	Context          string
@@ -81,6 +82,9 @@ type Client struct {
 
 	lastSendNano atomic.Int64
 	droppedSend  atomic.Uint64
+
+	// model 은 Start 뒤 runLoop 가 한 번 정한 실제 연결 모델이다(재연결에도 그대로 쓴다).
+	model string
 
 	// 수신 goroutine 전용 변환 상태(tokens.go).
 	conv *convState
@@ -168,6 +172,10 @@ const (
 func (c *Client) runLoop() {
 	defer c.wg.Done()
 	defer close(c.events)
+	// 연결할 모델을 한 번 정한다. 목록 조회가 늦어도 번역 시작이 오래 막히지 않게 짧게 기다린다.
+	rctx, rcancel := context.WithTimeout(c.ctx, 5*time.Second)
+	c.model, _ = c.resolveModel(rctx)
+	rcancel()
 	delay := initialReconnectDelay
 	attempts := 0
 	for {
@@ -208,7 +216,7 @@ func (c *Client) runLoop() {
 func (c *Client) setupMessage() map[string]any {
 	m := map[string]any{
 		"api_key":                        c.cfg.APIKey,
-		"model":                          model,
+		"model":                          c.model,
 		"audio_format":                   "pcm_s16le",
 		"sample_rate":                    audio.SampleRate,
 		"num_channels":                   1,
@@ -242,8 +250,8 @@ func (c *Client) setupMessage() map[string]any {
 func (c *Client) connectOnce() (result, bool) {
 	dialer := *websocket.DefaultDialer
 	dialer.HandshakeTimeout = 15 * time.Second
-	txlog.Logf("soniox.conn", "연결 시도 target=%q hints=%v terms=%d translationTerms=%d context=%d자",
-		c.cfg.TargetLanguage, c.cfg.LanguageHints, len(c.cfg.Terms), len(c.cfg.TranslationTerms), len([]rune(c.cfg.Context)))
+	txlog.Logf("soniox.conn", "연결 시도 model=%s target=%q hints=%v terms=%d translationTerms=%d context=%d자",
+		c.model, c.cfg.TargetLanguage, c.cfg.LanguageHints, len(c.cfg.Terms), len(c.cfg.TranslationTerms), len([]rune(c.cfg.Context)))
 	hdr := http.Header{"Authorization": {"Bearer " + c.cfg.APIKey}}
 	conn, resp, err := dialer.DialContext(c.ctx, endpoint, hdr)
 	if err != nil {
@@ -358,4 +366,11 @@ func (c *Client) emit(ev pipeline.Event) {
 
 func (c *Client) emitState(s pipeline.LifecycleState, err error) {
 	c.emit(pipeline.Event{Kind: pipeline.State, State: s, Err: err})
+}
+
+// resolveModel picks the model for this session and logs why.
+func (c *Client) resolveModel(ctx context.Context) (string, string) {
+	m, note := ResolveModel(ctx, c.cfg.APIKey, c.cfg.Model)
+	txlog.Logf("soniox.conn", "모델 결정 model=%s 설정=%q — %s", m, c.cfg.Model, note)
+	return m, note
 }

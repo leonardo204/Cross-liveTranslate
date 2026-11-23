@@ -327,6 +327,8 @@
           <div class="sectitle">모델 선택</div>
           <div class="group">
             <div class="row"><span class="lbl">번역 모델</span><select id="selModel"></select></div>
+            <div class="row hidden" id="rowSxModel"><span class="lbl">Soniox 모델</span><select id="selSxModel"><option value="">자동 (최신 모델)</option></select></div>
+            <div class="row hidden" id="rowSxModelCap"><span class="cap" id="sxModelCap">자동으로 두면 번역을 시작할 때 Soniox가 제공하는 가장 새 모델을 씁니다.</span></div>
             <div class="row"><span class="cap">번역 중 모델을 바꾸면 즉시 재연결되어 적용됩니다. 준비 중 모델은 선택해도 동작하지 않습니다.</span></div>
           </div>
         </div>
@@ -849,6 +851,51 @@
         $("grpEngineCut").classList.toggle("dimmed", sx);
         $("tgPlayback").disabled = sx;
         $("rowPlaybackSxCap").classList.toggle("hidden", !sx);
+        $("rowSxModel").classList.toggle("hidden", !sx);
+        $("rowSxModelCap").classList.toggle("hidden", !sx);
+        if (sx && !sxModelsLoaded) loadSxModels();
+      }
+
+      // ---- Soniox 모델 목록 ----
+      // 목록은 Soniox 서버에서 받아 온다(키 필요). 값 ""은 자동(번역 시작 때 가장 새 모델).
+      let sxModelsLoaded = false, sxModelList = null;
+      function currentSxModel() { return (S && S.soniox && S.soniox.model) || ""; }
+      function renderSxModels() {
+        const sel = $("selSxModel"), cur = currentSxModel();
+        const list = (sxModelList && sxModelList.models) || [];
+        const latest = sxModelList && sxModelList.latest;
+        sel.innerHTML = "";
+        const auto = document.createElement("option");
+        auto.value = "";
+        auto.textContent = latest ? "자동 (최신 모델: " + latest + ")" : "자동 (최신 모델)";
+        sel.appendChild(auto);
+        for (const m of list) {
+          const o = document.createElement("option");
+          o.value = m.id;
+          o.textContent = (m.name && m.name !== m.id) ? m.name + " (" + m.id + ")" : m.id;
+          sel.appendChild(o);
+        }
+        // 고른 모델이 목록에 없으면(목록을 못 받았거나 폐지된 모델) 그 값을 그대로 보여 준다.
+        if (cur && !list.some(m => m.id === cur)) {
+          const o = document.createElement("option");
+          o.value = cur;
+          o.textContent = cur + (list.length ? " (목록에 없음, 시작할 때 최신 모델로 대체)" : "");
+          sel.appendChild(o);
+        }
+        sel.value = cur;
+        const cap = $("sxModelCap");
+        if (sxModelList && sxModelList.error) cap.textContent = sxModelList.error + ". 자동으로 두면 번역을 시작할 때 가장 새 모델을 씁니다.";
+        else cap.textContent = "자동으로 두면 번역을 시작할 때 Soniox가 제공하는 가장 새 모델을 씁니다. 특정 모델로 고정하려면 목록에서 고르세요.";
+      }
+      async function loadSxModels() {
+        const a = api(); if (!a || !a.SonioxModels) return;
+        sxModelsLoaded = true;
+        $("sxModelCap").textContent = "모델 목록을 불러오는 중입니다.";
+        try { sxModelList = await a.SonioxModels(); }
+        catch (_) { sxModelList = { models: [], latest: "", error: "모델 목록을 불러오지 못했습니다" }; }
+        // 키가 없거나 네트워크 오류였다면 다음에 화면을 다시 그릴 때 한 번 더 시도한다.
+        if (sxModelList && sxModelList.error) sxModelsLoaded = false;
+        renderSxModels();
       }
 
       // ---- Soniox 용어집 ----
@@ -903,6 +950,7 @@
         $("sxPairs").innerHTML = "";
         for (const t of (sx.translationTerms || [])) addPairRow(t.source, t.target);
         renderSxBudget(sx);
+        renderSxModels();
       }
       function sxTokens(sx) {
         let n = estimateTokens(sx.context || "");
@@ -921,6 +969,7 @@
       function saveSoniox() {
         if (!S) return;
         const cand = {
+          model: currentSxModel(),
           languageHints: $("inSxHints").value.split(/[,\s]+/).map(v => v.trim().toLowerCase()).filter(Boolean),
           context: $("taSxContext").value,
           terms: sxListFrom($("taSxTerms").value),
@@ -963,6 +1012,12 @@
           renderEngineUI();
           commit();
         });
+        $("selSxModel").addEventListener("change", () => {
+          if (!S) return;
+          S.soniox = Object.assign({}, S.soniox || {}, { model: $("selSxModel").value });
+          renderSxModels();
+          commit();
+        });
         $("inSxHints").addEventListener("input", saveSoniox);
         $("taSxContext").addEventListener("input", saveSoniox);
         $("taSxTerms").addEventListener("input", saveSoniox);
@@ -985,6 +1040,7 @@
             await a.SaveEngineAPIKey("soniox", $("inKeySx").value);
             $("inKeySx").value = ""; $("keyMsgSx").textContent = "키를 저장했습니다.";
             sxTestState = "idle"; await refreshKeyStateSx();
+            loadSxModels();
           } catch (e) { $("keyMsgSx").textContent = "키 저장에 실패했습니다."; }
         });
         $("btnDeleteKeySx").addEventListener("click", async () => {

@@ -53,6 +53,9 @@ type TranslationTerm struct {
 //
 // Soniox는 이 묶음(context)을 연결할 때 함께 받으며, 합쳐서 약 8,000토큰까지 허용한다.
 type SonioxSettings struct {
+	// Model 은 Soniox 실시간 모델 id(예: stt-rt-v6)다. 비면 자동 — 연결할 때 Soniox 모델 목록에서
+	// 가장 새 모델을 고른다(internal/soniox/models.go).
+	Model            string            `json:"model"`
 	LanguageHints    []string          `json:"languageHints"`
 	Context          string            `json:"context"`
 	Terms            []string          `json:"terms"`
